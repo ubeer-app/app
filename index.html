@@ -88,6 +88,10 @@ function eur(n){return Number(n).toFixed(2).replace('.',',')+' €';}
 function norm(t){return String(t).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,' ').trim();}
 function errMsg(e){return (e&&e.message)||'Ocorreu um erro. Tenta outra vez.';}
 var STATUS={requested:['À procura de condutor','warn'],accepted:['Condutor a caminho','ok'],ongoing:['Em viagem','ok'],completed:['Concluída','ok'],cancelled:['Cancelada','bad']};
+function split(r){var fee=Number(r.price)-Number(r.driver_earnings);
+  return h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Cliente paga'}),h('b',{text:eur(r.price)})),
+    h('div',null,h('div',{class:'small muted',text:'Condutor recebe'}),h('b',{text:eur(r.driver_earnings)})),
+    h('div',null,h('div',{class:'small muted',text:'Ubeer (plataforma)'}),h('b',{text:eur(fee)})));}
 function pill(s){var x=STATUS[s]||[s,''];return h('span',{class:'pill '+x[1],text:x[0]});}
 function fmtDate(t){return new Date(t).toLocaleString('pt-PT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});}
 
@@ -324,7 +328,7 @@ function driveView(app){
     app.append(h('div',{class:'card'},h('div',{class:'row'},h('h2',{class:'grow',text:'Viagem em curso'}),pill(act.status)),
       h('div',null,h('b',{text:act.from_name}),h('span',{class:'muted',text:'  →  '}),h('b',{text:act.to_name})),
       h('p',null,'Passageiro: ',h('b',{text:act.passenger_name}),act.passenger_phone?h('span',null,' · ',h('a',{href:'tel:'+act.passenger_phone,text:act.passenger_phone})):null),
-      h('div',{class:'row'},h('span',{class:'price',text:eur(act.price)}),h('span',{class:'muted small',text:'ganhas '+eur(act.driver_earnings)})),
+      split(act),
       h('div',{class:'row'},navLinks(act),
         h('button',{class:'btn grow',onclick:function(){rpc('advance_ride',{p_id:act.id});}},act.status==='accepted'?'Iniciar viagem':'Concluir viagem'),
         act.status==='accepted'?h('button',{class:'btn ghost',onclick:function(){rpc('drop_ride',{p_id:act.id},'Viagem devolvida.');}},'Largar'):null)));
@@ -335,14 +339,14 @@ function driveView(app){
     else c.append(h('div',{class:'list'},open.map(function(r){
       return h('div',{class:'item'},h('b',{text:r.from_name+' → '+r.to_name}),
         h('div',{class:'small muted',text:Number(r.km).toFixed(1).replace('.',',')+' km · '+Math.round(r.minutes)+' min · '+fmtDate(r.created_at)}),
-        h('div',{class:'row'},h('span',{class:'price',text:eur(r.driver_earnings)}),h('span',{class:'small muted grow',text:'para ti (cliente paga '+eur(r.price)+')'}),
-          h('button',{class:'btn',onclick:function(){rpc('accept_ride',{p_id:r.id},'Viagem aceite.');}},'Aceitar')));})));
+        split(r),
+        h('button',{class:'btn',onclick:function(){rpc('accept_ride',{p_id:r.id},'Viagem aceite.');}},'Aceitar'));})));
     app.append(c);
   }else app.append(h('div',{class:'card'},h('div',{class:'empty',text:'Fica online para receber pedidos.'})));
   var done=mine.filter(function(r){return ['completed','cancelled'].indexOf(r.status)>-1;}).slice(0,10);
   if(done.length)app.append(h('div',{class:'card'},h('h2',{text:'Últimas viagens'}),h('div',{class:'list'},done.map(function(r){
     return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
-      h('div',{class:'small muted',text:fmtDate(r.updated_at)+' · '+eur(r.driver_earnings)}));}))));
+      h('div',{class:'small muted',text:fmtDate(r.updated_at)}),r.status==='completed'?split(r):null);}))));
 }
 async function toggleOnline(){
   var r=await sb.from('profiles').update({is_online:!S.profile.is_online}).eq('id',S.user.id).select().single();
@@ -398,7 +402,7 @@ function adminView(app){
     h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Viagens concluídas'}),h('b',{text:String(done.length)})),
       h('div',null,h('div',{class:'small muted',text:'Faturado'}),h('b',{text:eur(total)})),h('div',null,h('div',{class:'small muted',text:'Comissão Ubeer'}),h('b',{text:eur(comm)}))),
     h('div',{class:'list'},all.map(function(r){return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
-      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+r.passenger_name+(r.driver_name?' · '+r.driver_name:'')+' · '+eur(r.price)}));}))));
+      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+r.passenger_name+(r.driver_name?' · '+r.driver_name:'')}),split(r));}))));
 }
 
 boot();
