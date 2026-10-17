@@ -131,7 +131,7 @@ async function loadRides(){
   if(changed&&!(a&&/INPUT|SELECT/.test(a.tagName)&&$('#app').contains(a)))render();
 }
 async function loadLedger(){
-  if(!S.profile||S.profile.role==='passenger')return;
+  if(!S.profile||(S.profile.role==='passenger'&&!S.profile.can_drive))return;
   var a=await sb.rpc('driver_ledger'),b=await sb.from('payments').select('*').order('created_at',{ascending:false}).limit(100);
   S.ledger=a.data||[];S.payments=b.data||[];
 }
@@ -157,7 +157,7 @@ async function boot(){
 async function afterLogin(){
   await loadProfile();
   if(!S.profile){toast('Perfil não encontrado. Sai e entra de novo.');}
-  S.tab=S.profile&&S.profile.role==='driver'?'drive':S.profile&&S.profile.role==='admin'?'ride':'ride';
+  S.tab=S.profile&&(S.profile.role==='driver'||S.profile.can_drive)?'drive':'ride';
   await loadRides();subscribe();
   if(S.profile&&S.profile.role==='admin')await loadUsers();
   await loadLedger();
@@ -184,9 +184,10 @@ function render(){
     S.user?h('button',{class:'btn ghost sm',onclick:doLogout},'Sair'):null));
   if(!S.user){app.append(authView(),infoCard());return;}
   if(!S.profile){return;}
+  var isD=S.profile.role==='driver'||S.profile.can_drive;
   var tabs=[['ride','Pedir viagem']];
-  if(S.profile.role==='driver')tabs=[['drive','Condutor'],['ride','Pedir viagem']];
-  if(S.profile.role==='admin')tabs=[['ride','Pedir viagem'],['admin','Gestão']];
+  if(isD)tabs=[['drive','Condutor'],['ride','Pedir viagem']];
+  if(S.profile.role==='admin')tabs=isD?[['drive','Condutor'],['ride','Pedir viagem'],['admin','Gestão']]:[['ride','Pedir viagem'],['admin','Gestão']];
   app.append(h('div',{class:'tabs'},tabs.map(function(t){
     return h('button',{class:'btn '+(S.tab===t[0]?'':'ghost'),onclick:function(){S.tab=t[0];render();}},t[1]);})));
   if(S.tab==='ride')rideView(app);
@@ -393,14 +394,19 @@ function adminView(app){
       if(r.error)toast(errMsg(r.error));else{S.tariffs=r.data;toast('Tarifas guardadas.');}}},'Guardar tarifas'));
   app.append(tf);
 
-  var drivers=S.users.filter(function(u){return u.role==='driver';}).length;
-  var uc=h('div',{class:'card'},h('h2',{text:'Utilizadores'}),h('p',{class:'small muted',text:'Condutores: '+drivers+' de 10. Muda o papel de quem se registou para o tornar condutor.'}),
+  var drivers=S.users.filter(function(u){return u.role==='driver'||u.can_drive;}).length;
+  var uc=h('div',{class:'card'},h('h2',{text:'Utilizadores'}),h('p',{class:'small muted',text:'Condutores: '+drivers+' de 10. Muda o papel de quem se registou para o tornar condutor, ou marca "também conduz" (por exemplo para ti).'}),
     h('div',{class:'list'},S.users.map(function(u){
       var sel=h('select',{onchange:async function(){var r=await sb.from('profiles').update({role:sel.value}).eq('id',u.id);
         if(r.error)toast(errMsg(r.error));else toast('Papel atualizado.');await loadUsers();render();}},
         [['passenger','Passageiro'],['driver','Condutor'],['admin','Administrador']].map(function(o){return h('option',{value:o[0],selected:u.role===o[0],text:o[1]});}));
       return h('div',{class:'item'},h('b',{text:u.name||u.email}),h('div',{class:'small muted',text:(u.email||'')+(u.phone?' · '+u.phone:'')}),
-        u.id===S.user.id?h('div',{class:'small muted',text:'(tu)'}):sel);})));
+        u.id===S.user.id?h('div',{class:'small muted',text:'(tu)'}):sel,
+        u.role==='driver'?null:h('label',{style:'flex-direction:row;align-items:center;gap:8px'},
+          h('input',{type:'checkbox',style:'width:auto',checked:u.can_drive,onchange:async function(e){
+            var r=await sb.from('profiles').update({can_drive:e.target.checked}).eq('id',u.id);
+            if(r.error)toast(errMsg(r.error));else toast('Atualizado.');
+            await loadUsers();if(u.id===S.user.id)await loadProfile();render();}}),'Também conduz'));})));
   app.append(uc);
 
   var pName=h('input',{placeholder:'Ex.: Largo da Feira Velha'}),pCoord=h('input',{placeholder:'40.1687, -8.7501',inputmode:'decimal'});
