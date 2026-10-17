@@ -68,7 +68,7 @@ var sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 var BOX={latMin:39.98,latMax:40.36,lonMin:-8.95,lonMax:-8.55};
 function inArea(p){return p.lat>=BOX.latMin&&p.lat<=BOX.latMax&&p.lon>=BOX.lonMin&&p.lon<=BOX.lonMax;}
 
-var S={user:null,profile:null,tariffs:null,places:[],rides:[],tab:'ride',cat:'eco',from:null,to:null,route:null,map:null,layer:null,users:[],onlineCount:0,busy:false};
+var S={user:null,profile:null,tariffs:null,places:[],rides:[],tab:'ride',cat:'eco',from:null,to:null,route:null,map:null,layer:null,users:[],ledger:[],payments:[],onlineCount:0,busy:false};
 
 function $(s,r){return (r||document).querySelector(s);}
 function h(tag,attrs){
@@ -92,6 +92,13 @@ function split(r){var fee=Number(r.price)-Number(r.driver_earnings);
   return h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Cliente paga'}),h('b',{text:eur(r.price)})),
     h('div',null,h('div',{class:'small muted',text:'Condutor recebe'}),h('b',{text:eur(r.driver_earnings)})),
     h('div',null,h('div',{class:'small muted',text:'Ubeer (plataforma)'}),h('b',{text:eur(fee)})));}
+function ledgerBox(l){
+  return h('div',{class:'grid2'},
+    h('div',null,h('div',{class:'small muted',text:'Ganhos (condutor)'}),h('b',{text:eur(l.earned)})),
+    h('div',null,h('div',{class:'small muted',text:'Parte do molhe'}),h('b',{text:eur(l.owed)})),
+    h('div',null,h('div',{class:'small muted',text:'Já entregue'}),h('b',{text:eur(l.paid)})),
+    h('div',null,h('div',{class:'small muted',text:'Falta entregar'}),h('b',{class:'price',style:'color:'+(Number(l.balance)>0.004?'var(--warn)':'var(--ok)'),text:eur(l.balance)})));
+}
 function pill(s){var x=STATUS[s]||[s,''];return h('span',{class:'pill '+x[1],text:x[0]});}
 function fmtDate(t){return new Date(t).toLocaleString('pt-PT',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});}
 
@@ -119,8 +126,14 @@ async function loadRides(){
   if(r.error)return;
   var sig=JSON.stringify((r.data||[]).map(function(x){return [x.id,x.status,x.driver_id];}));
   var changed=sig!==S.sig;S.sig=sig;S.rides=r.data||[];
+  if(changed)await loadLedger();
   var a=document.activeElement;
   if(changed&&!(a&&/INPUT|SELECT/.test(a.tagName)&&$('#app').contains(a)))render();
+}
+async function loadLedger(){
+  if(!S.profile||S.profile.role==='passenger')return;
+  var a=await sb.rpc('driver_ledger'),b=await sb.from('payments').select('*').order('created_at',{ascending:false}).limit(100);
+  S.ledger=a.data||[];S.payments=b.data||[];
 }
 async function loadUsers(){
   var r=await sb.from('profiles').select('*').order('created_at');S.users=r.data||[];
@@ -147,6 +160,7 @@ async function afterLogin(){
   S.tab=S.profile&&S.profile.role==='driver'?'drive':S.profile&&S.profile.role==='admin'?'ride':'ride';
   await loadRides();subscribe();
   if(S.profile&&S.profile.role==='admin')await loadUsers();
+  await loadLedger();
   render();
 }
 async function doLogin(email,pass){
@@ -324,6 +338,12 @@ function driveView(app){
       h('button',{class:'btn '+(p.is_online?'danger':''),onclick:toggleOnline},p.is_online?'Ficar offline':'Ficar online')),
     h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Estado'}),h('b',{text:p.is_online?'Online':'Offline'})),
       h('div',null,h('div',{class:'small muted',text:'Ganhos hoje'}),h('b',{text:eur(earned)})))));
+  var myL=S.ledger.filter(function(x){return x.driver_id===p.id;})[0]||{earned:0,owed:0,paid:0,balance:0,rides:0};
+  var myP=S.payments.filter(function(x){return x.driver_id===p.id;}).slice(0,8);
+  app.append(h('div',{class:'card'},h('h2',{text:'A minha conta corrente'}),
+    h('p',{class:'small muted',text:'O cliente paga-te a ti. De cada viagem concluída, a parte do molhe tem de ser entregue. '+myL.rides+' viagem(ns) concluída(s).'}),
+    ledgerBox(myL),
+    myP.length?h('div',{class:'list'},myP.map(function(x){return h('div',{class:'row small'},h('span',{class:'grow muted',text:fmtDate(x.created_at)+(x.note?' · '+x.note:'')}),h('b',{text:'− '+eur(x.amount)}));})):null));
   if(act){
     app.append(h('div',{class:'card'},h('div',{class:'row'},h('h2',{class:'grow',text:'Viagem em curso'}),pill(act.status)),
       h('div',null,h('b',{text:act.from_name}),h('span',{class:'muted',text:'  →  '}),h('b',{text:act.to_name})),
@@ -395,6 +415,27 @@ function adminView(app){
     h('div',{class:'list'},S.places.map(function(p){return h('div',{class:'row item'},h('span',{class:'grow',text:p.name}),
       h('button',{class:'btn danger sm',onclick:async function(){var r=await sb.from('places').delete().eq('id',p.id);if(r.error)toast(errMsg(r.error));await loadPublic();render();}},'Remover'));})));
   app.append(pc);
+
+  var dSel=h('select',null,S.ledger.map(function(l){return h('option',{value:l.driver_id,text:l.name+' · falta '+eur(l.balance)});}));
+  var amt=h('input',{type:'number',step:'0.01',min:'0.01',inputmode:'decimal',placeholder:'0,00'}),note=h('input',{placeholder:'Ex.: MBWay, em mão'});
+  var totalFalta=S.ledger.reduce(function(a,l){return a+Number(l.balance);},0),totalPago=S.ledger.reduce(function(a,l){return a+Number(l.paid);},0);
+  var nameOf={};S.ledger.forEach(function(l){nameOf[l.driver_id]=l.name;});
+  app.append(h('div',{class:'card'},h('h2',{text:'Contas correntes dos condutores'}),
+    h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Por entregar ao molhe'}),h('b',{class:'price',text:eur(totalFalta)})),
+      h('div',null,h('div',{class:'small muted',text:'Já entregue ao molhe'}),h('b',{class:'price',text:eur(totalPago)}))),
+    h('div',{class:'list'},S.ledger.length?S.ledger.map(function(l){return h('div',{class:'item'},h('b',{text:l.name+' · '+l.rides+' viagem(ns)'}),ledgerBox(l));}):h('div',{class:'empty',text:'Ainda não há condutores.'})),
+    S.ledger.length?h('div',{class:'item'},h('b',{text:'Registar entrega'}),
+      h('label',null,'Condutor',dSel),h('div',{class:'grid2'},h('label',null,'Valor (€)',amt),h('label',null,'Nota',note)),
+      h('button',{class:'btn',onclick:async function(){
+        var v=parseFloat(String(amt.value).replace(',','.'));
+        if(!(v>0)){toast('Indica o valor entregue.');return;}
+        var r=await sb.from('payments').insert({driver_id:dSel.value,amount:v,note:note.value.trim()});
+        if(r.error){toast(errMsg(r.error));return;}
+        toast('Entrega registada.');await loadLedger();render();}},'Registar entrega')):null,
+    S.payments.length?h('div',null,h('b',{class:'small',text:'Últimas entregas'}),h('div',{class:'list'},S.payments.slice(0,15).map(function(x){
+      return h('div',{class:'row small'},h('span',{class:'grow muted',text:fmtDate(x.created_at)+' · '+(nameOf[x.driver_id]||'')+(x.note?' · '+x.note:'')}),h('b',{text:eur(x.amount)}),
+        h('button',{class:'btn danger sm',onclick:async function(){if(!confirm('Apagar esta entrega de '+eur(x.amount)+'?'))return;
+          var r=await sb.from('payments').delete().eq('id',x.id);if(r.error)toast(errMsg(r.error));await loadLedger();render();}},'Apagar'));}))):null));
 
   var all=S.rides.slice(0,30),done=S.rides.filter(function(r){return r.status==='completed';});
   var total=done.reduce(function(a,r){return a+Number(r.price);},0),comm=done.reduce(function(a,r){return a+Number(r.price)-Number(r.driver_earnings);},0);
