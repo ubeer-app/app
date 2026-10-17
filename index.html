@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Ubeer</title>
 <meta name="theme-color" content="#14532d">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Ubeer">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
 :root{--bg:#f4f6f1;--card:#fff;--fg:#17211b;--muted:#5d6b61;--line:#dde4da;--accent:#14532d;--accent-fg:#fff;--warn:#b45309;--bad:#b42318;--ok:#1a7f45}
@@ -63,6 +67,61 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
 var SUPABASE_URL='https://fqkbhnhmihcdhgdygigh.supabase.co';
 var SUPABASE_KEY='sb_publishable_CsSPY5QFxYrJ5J-XcnoYAA_H0t8UjzU';
 var sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+var VAPID_PUBLIC='BLYPDzPv6Aomipo6jR1MXTKEMC88AL4Z7-O1hAxMxRDMWCpWhVyjEK35hsIwDUqn_rnWF7eX2c_9cWyCGCWkt3U';
+
+/* ---------- avisos push ---------- */
+function b64ToU8(b){var p='='.repeat((4-b.length%4)%4),r=(b+p).replace(/-/g,'+').replace(/_/g,'/'),raw=atob(r),o=new Uint8Array(raw.length);for(var i=0;i<raw.length;i++)o[i]=raw.charCodeAt(i);return o;}
+function isStandalone(){return window.navigator.standalone===true||(window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches);}
+function isIOS(){return /iphone|ipad|ipod/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);}
+async function pushState(){
+  if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window))return isIOS()&&!isStandalone()?'ios-install':'unsupported';
+  if(Notification.permission==='denied')return 'denied';
+  try{
+    var reg=await navigator.serviceWorker.getRegistration();
+    var sub=reg&&await reg.pushManager.getSubscription();
+    if(sub&&Notification.permission==='granted')return 'on';
+  }catch(e){}
+  return 'off';
+}
+async function enablePush(){
+  try{
+    var perm=await Notification.requestPermission();
+    if(perm!=='granted'){toast('Sem permissão não consigo avisar-te. Ativa as notificações nas definições do browser.');render();return;}
+    var reg=await navigator.serviceWorker.register('sw.js');await navigator.serviceWorker.ready;
+    var sub=await reg.pushManager.getSubscription();
+    if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64ToU8(VAPID_PUBLIC)});
+    var j=sub.toJSON();
+    var r=await sb.from('push_subscriptions').upsert({endpoint:j.endpoint,p256dh:j.keys.p256dh,auth:j.keys.auth},{onConflict:'endpoint'});
+    if(r.error){toast(errMsg(r.error));return;}
+    toast('Avisos ativados neste telemóvel.');render();
+  }catch(e){toast('Não foi possível ativar os avisos: '+errMsg(e));}
+}
+async function testPush(){
+  try{var reg=await navigator.serviceWorker.getRegistration();
+    if(!reg){toast('Ativa os avisos primeiro.');return;}
+    await reg.showNotification('Ubeer',{body:'Teste: os avisos estão a funcionar.',icon:'icon-192.png',tag:'teste'});
+  }catch(e){toast(errMsg(e));}
+}
+async function disablePush(){
+  try{var reg=await navigator.serviceWorker.getRegistration();var sub=reg&&await reg.pushManager.getSubscription();
+    if(sub){await sb.from('push_subscriptions').delete().eq('endpoint',sub.endpoint);await sub.unsubscribe();}
+    toast('Avisos desativados neste telemóvel.');render();}catch(e){toast(errMsg(e));}
+}
+function pushCard(){
+  var body=h('div',{class:'col'}),c=h('div',{class:'card'},h('h2',{text:'Avisos de novos pedidos'}),body);
+  pushState().then(function(st){
+    body.textContent='';
+    var say=function(t){body.append(h('p',{class:'small muted',text:t}));};
+    if(st==='on'){say('Ativos neste telemóvel. Recebes um aviso a cada pedido novo enquanto estiveres online.');
+      body.append(h('div',{class:'row'},h('button',{class:'btn ghost sm',onclick:testPush},'Testar neste telemóvel'),h('button',{class:'btn ghost sm',onclick:disablePush},'Desativar')));}
+    else if(st==='off'){say('Ativa para o telemóvel tocar quando entrar um pedido, mesmo com a app fechada. Só recebes avisos enquanto estiveres online.');
+      body.append(h('button',{class:'btn',onclick:enablePush},'Ativar avisos'));}
+    else if(st==='denied')say('As notificações estão bloqueadas para este site. Desbloqueia nas definições do browser (cadeado junto ao endereço) e volta aqui.');
+    else if(st==='ios-install')say('No iPhone, primeiro adiciona a Ubeer ao ecrã principal: botão Partilhar → Adicionar ao ecrã principal. Depois abre a Ubeer a partir desse ícone e ativa os avisos aqui.');
+    else say('Este browser não suporta avisos. Experimenta o Chrome (Android) ou o Safari com a Ubeer no ecrã principal (iPhone).');
+  });
+  return c;
+}
 
 /* área de serviço (caixa à volta de Figueira da Foz – Montemor-o-Velho) */
 var BOX={latMin:39.98,latMax:40.36,lonMin:-8.95,lonMax:-8.55};
@@ -174,7 +233,11 @@ async function doRegister(name,phone,email,pass){
   if(!r.data.session){toast('Conta criada. Confirma o email que te enviámos e depois entra.');return;}
   S.user=r.data.user;await afterLogin();
 }
-async function doLogout(){await sb.auth.signOut();}
+async function doLogout(){
+  try{var reg=await navigator.serviceWorker.getRegistration();var sub=reg&&await reg.pushManager.getSubscription();
+    if(sub){await sb.from('push_subscriptions').delete().eq('endpoint',sub.endpoint);await sub.unsubscribe();}}catch(e){}
+  await sb.auth.signOut();
+}
 
 /* ---------- vistas ---------- */
 function render(){
@@ -339,6 +402,7 @@ function driveView(app){
       h('button',{class:'btn '+(p.is_online?'danger':''),onclick:toggleOnline},p.is_online?'Ficar offline':'Ficar online')),
     h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Estado'}),h('b',{text:p.is_online?'Online':'Offline'})),
       h('div',null,h('div',{class:'small muted',text:'Ganhos hoje'}),h('b',{text:eur(earned)})))));
+  app.append(pushCard());
   var myL=S.ledger.filter(function(x){return x.driver_id===p.id;})[0]||{earned:0,owed:0,paid:0,balance:0,rides:0};
   var myP=S.payments.filter(function(x){return x.driver_id===p.id;}).slice(0,8);
   app.append(h('div',{class:'card'},h('h2',{text:'A minha conta corrente'}),
