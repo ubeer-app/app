@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Ubeer</title>
 <meta name="theme-color" content="#14532d">
+<link rel="icon" type="image/png" href="favicon.png">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -66,6 +67,7 @@ input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px}
 'use strict';
 var SUPABASE_URL='https://fqkbhnhmihcdhgdygigh.supabase.co';
 var SUPABASE_KEY='sb_publishable_CsSPY5QFxYrJ5J-XcnoYAA_H0t8UjzU';
+var RECOVERY=/type=recovery/.test(location.hash);
 var sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 var VAPID_PUBLIC='BLYPDzPv6Aomipo6jR1MXTKEMC88AL4Z7-O1hAxMxRDMWCpWhVyjEK35hsIwDUqn_rnWF7eX2c_9cWyCGCWkt3U';
 
@@ -82,6 +84,19 @@ async function pushState(){
     if(sub&&Notification.permission==='granted')return 'on';
   }catch(e){}
   return 'off';
+}
+async function ensurePush(){
+  /* reativa sozinho os avisos se a permissão já foi dada (ex.: depois de sair e entrar) */
+  try{
+    if(!S.user||!S.profile||!(S.profile.role==='driver'||S.profile.can_drive))return;
+    if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window))return;
+    if(Notification.permission!=='granted')return;
+    var reg=await navigator.serviceWorker.register('sw.js');await navigator.serviceWorker.ready;
+    var sub=await reg.pushManager.getSubscription();
+    if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64ToU8(VAPID_PUBLIC)});
+    var j=sub.toJSON();
+    await sb.from('push_subscriptions').upsert({endpoint:j.endpoint,p256dh:j.keys.p256dh,auth:j.keys.auth},{onConflict:'endpoint'});
+  }catch(e){}
 }
 async function enablePush(){
   try{
@@ -208,10 +223,12 @@ setInterval(function(){if(S.user&&!document.hidden){loadRides();}},20000);
 async function boot(){
   await loadPublic();
   var s=(await sb.auth.getSession()).data.session;
-  if(s){S.user=s.user;await afterLogin();}else render();
   sb.auth.onAuthStateChange(function(ev,session){
+    if(ev==='PASSWORD_RECOVERY'){RECOVERY=true;render();}
     if(ev==='SIGNED_OUT'){S.user=null;S.profile=null;S.rides=[];render();}
   });
+  if(RECOVERY){render();return;}
+  if(s){S.user=s.user;await afterLogin();}else render();
 }
 async function afterLogin(){
   await loadProfile();
@@ -221,6 +238,7 @@ async function afterLogin(){
   if(S.profile&&S.profile.role==='admin')await loadUsers();
   await loadLedger();
   render();
+  ensurePush();
 }
 async function doLogin(email,pass){
   var r=await sb.auth.signInWithPassword({email:email,password:pass});
@@ -233,6 +251,21 @@ async function doRegister(name,phone,email,pass){
   if(!r.data.session){toast('Conta criada. Confirma o email que te enviámos e depois entra.');return;}
   S.user=r.data.user;await afterLogin();
 }
+async function doForgot(email){
+  if(!email){toast('Escreve o teu email.');return;}
+  var r=await sb.auth.resetPasswordForEmail(email,{redirectTo:location.origin+location.pathname});
+  if(r.error){toast(r.error.status===429?'Muitos pedidos. Espera um pouco e tenta de novo.':r.error.message);return;}
+  authMode='sent';render();
+}
+async function doNewPass(pass){
+  if(pass.length<6){toast('A palavra-passe tem de ter pelo menos 6 caracteres.');return;}
+  var r=await sb.auth.updateUser({password:pass});
+  if(r.error){toast(r.error.message);return;}
+  RECOVERY=false;history.replaceState(null,'',location.pathname);
+  toast('Palavra-passe alterada.');
+  var g=(await sb.auth.getSession()).data.session;
+  if(g){S.user=g.user;await afterLogin();}else{authMode='login';render();}
+}
 async function doLogout(){
   try{var reg=await navigator.serviceWorker.getRegistration();var sub=reg&&await reg.pushManager.getSubscription();
     if(sub){await sb.from('push_subscriptions').delete().eq('endpoint',sub.endpoint);await sub.unsubscribe();}}catch(e){}
@@ -243,8 +276,9 @@ async function doLogout(){
 function render(){
   var app=$('#app');app.textContent='';
   app.append(h('header',null,
-    h('div',{class:'brand'},'Ubeer',h('small',{text:'Figueira da Foz · Montemor-o-Velho'})),
+    h('div',{class:'brand',style:'display:flex;align-items:center;gap:8px;flex-wrap:wrap'},h('img',{src:'icon-192.png',alt:'',width:'38',height:'38',style:'border-radius:9px;flex:none'}),'Ubeer',h('small',{text:'Figueira da Foz · Montemor-o-Velho'})),
     S.user?h('button',{class:'btn ghost sm',onclick:doLogout},'Sair'):null));
+  if(RECOVERY){app.append(resetView());return;}
   if(!S.user){app.append(authView(),infoCard());return;}
   if(!S.profile){return;}
   var isD=S.profile.role==='driver'||S.profile.can_drive;
@@ -263,7 +297,27 @@ function infoCard(){
     h('p',{class:'small muted',text:S.onlineCount?S.onlineCount+' condutor(es) disponível(is) agora.':'Neste momento não há condutores disponíveis.'}));
 }
 var authMode='login';
+function resetView(){
+  var p=h('input',{type:'password',autocomplete:'new-password',minlength:6,required:true});
+  return h('form',{class:'card',onsubmit:function(e){e.preventDefault();doNewPass(p.value);}},
+    h('h2',{text:'Nova palavra-passe'}),
+    h('p',{class:'muted',text:'Escolhe a palavra-passe nova para a tua conta.'}),
+    h('label',null,'Nova palavra-passe (mín. 6 caracteres)',p),
+    h('button',{class:'btn',type:'submit',text:'Guardar'}));
+}
 function authView(){
+  if(authMode==='sent')return h('div',{class:'card'},h('h2',{text:'Verifica o email'}),
+    h('p',{class:'muted',text:'Se esse email tiver conta, enviámos-te um link para escolheres uma palavra-passe nova. Vê também o spam.'}),
+    h('button',{class:'btn ghost',onclick:function(){authMode='login';render();}},'Voltar a entrar'));
+  if(authMode==='forgot'){
+    var fe=h('input',{type:'email',autocomplete:'email',required:true});
+    return h('form',{class:'card',onsubmit:function(e){e.preventDefault();doForgot(fe.value.trim());}},
+      h('h2',{text:'Recuperar palavra-passe'}),
+      h('p',{class:'muted',text:'Escreve o email da tua conta e enviamos-te um link para criares uma nova.'}),
+      h('label',null,'Email',fe),
+      h('button',{class:'btn',type:'submit',text:'Enviar link'}),
+      h('button',{class:'btn ghost',type:'button',onclick:function(){authMode='login';render();}},'Voltar'));
+  }
   var email=h('input',{type:'email',autocomplete:'email',required:true}),pass=h('input',{type:'password',autocomplete:authMode==='login'?'current-password':'new-password',minlength:6,required:true});
   var name=h('input',{autocomplete:'name'}),phone=h('input',{type:'tel',autocomplete:'tel'});
   var form=h('form',{class:'card',onsubmit:function(e){e.preventDefault();
@@ -275,7 +329,8 @@ function authView(){
     h('label',null,'Email',email),h('label',null,'Palavra-passe (mín. 6 caracteres)',pass),
     h('button',{class:'btn',type:'submit',text:authMode==='login'?'Entrar':'Criar conta'}),
     h('button',{class:'btn ghost',type:'button',onclick:function(){authMode=authMode==='login'?'register':'login';render();}},
-      authMode==='login'?'Ainda não tenho conta':'Já tenho conta'));
+      authMode==='login'?'Ainda não tenho conta':'Já tenho conta'),
+    authMode==='login'?h('button',{class:'btn ghost',type:'button',onclick:function(){authMode='forgot';render();}},'Esqueci-me da palavra-passe'):null);
   return form;
 }
 
@@ -507,13 +562,20 @@ function adminView(app){
         h('button',{class:'btn danger sm',onclick:async function(){if(!confirm('Apagar esta entrega de '+eur(x.amount)+'?'))return;
           var r=await sb.from('payments').delete().eq('id',x.id);if(r.error)toast(errMsg(r.error));await loadLedger();render();}},'Apagar'));}))):null));
 
-  var all=S.rides.slice(0,30),done=S.rides.filter(function(r){return r.status==='completed';});
+  var all=S.rides.slice(0,50),done=S.rides.filter(function(r){return r.status==='completed';});
   var total=done.reduce(function(a,r){return a+Number(r.price);},0),comm=done.reduce(function(a,r){return a+Number(r.price)-Number(r.driver_earnings);},0);
   app.append(h('div',{class:'card'},h('h2',{text:'Atividade'}),
     h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Viagens concluídas'}),h('b',{text:String(done.length)})),
       h('div',null,h('div',{class:'small muted',text:'Faturado'}),h('b',{text:eur(total)})),h('div',null,h('div',{class:'small muted',text:'Comissão Ubeer'}),h('b',{text:eur(comm)}))),
     h('div',{class:'list'},all.map(function(r){return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
-      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+r.passenger_name+(r.driver_name?' · '+r.driver_name:'')}),split(r));}))));
+      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+r.passenger_name+(r.driver_name?' · '+r.driver_name:'')}),split(r),
+      h('div',{class:'row'},h('button',{class:'btn danger sm',onclick:async function(){
+        var msg='Apagar esta viagem ('+r.from_name+' → '+r.to_name+', '+eur(r.price)+')?'+(r.status==='completed'?' Vai também sair das contas correntes.':'')+' Não dá para desfazer.';
+        if(!confirm(msg))return;
+        var d=await sb.from('rides').delete().eq('id',r.id).select('id');
+        if(d.error){toast(errMsg(d.error));return;}
+        if(!d.data||!d.data.length){toast('Não foi possível apagar.');return;}
+        toast('Viagem apagada.');S.sig='';await loadRides();}},'Apagar viagem')));}))));
 }
 
 boot();
