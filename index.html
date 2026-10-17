@@ -65,7 +65,7 @@ var SUPABASE_KEY='sb_publishable_CsSPY5QFxYrJ5J-XcnoYAA_H0t8UjzU';
 var sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 
 /* área de serviço (caixa à volta de Figueira da Foz – Montemor-o-Velho) */
-var BOX={latMin:39.98,latMax:40.30,lonMin:-8.95,lonMax:-8.55};
+var BOX={latMin:39.98,latMax:40.36,lonMin:-8.95,lonMax:-8.55};
 function inArea(p){return p.lat>=BOX.latMin&&p.lat<=BOX.latMax&&p.lon>=BOX.lonMin&&p.lon<=BOX.lonMax;}
 
 var S={user:null,profile:null,tariffs:null,places:[],rides:[],tab:'ride',cat:'eco',from:null,to:null,route:null,map:null,layer:null,users:[],onlineCount:0,busy:false};
