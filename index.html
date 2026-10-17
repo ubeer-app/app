@@ -370,7 +370,7 @@ function adminView(app){
   app.append(tf);
 
   var drivers=S.users.filter(function(u){return u.role==='driver';}).length;
-  var uc=h('div',{class:'card'},h('h2',{text:'Utilizadores'}),h('p',{class:'small muted',text:'Condutores: '+drivers+' de 5. Muda o papel de quem se registou para o tornar condutor.'}),
+  var uc=h('div',{class:'card'},h('h2',{text:'Utilizadores'}),h('p',{class:'small muted',text:'Condutores: '+drivers+' de 10. Muda o papel de quem se registou para o tornar condutor.'}),
     h('div',{class:'list'},S.users.map(function(u){
       var sel=h('select',{onchange:async function(){var r=await sb.from('profiles').update({role:sel.value}).eq('id',u.id);
         if(r.error)toast(errMsg(r.error));else toast('Papel atualizado.');await loadUsers();render();}},
