@@ -142,7 +142,7 @@ function pushCard(){
 var BOX={latMin:39.98,latMax:40.36,lonMin:-8.95,lonMax:-8.55};
 function inArea(p){return p.lat>=BOX.latMin&&p.lat<=BOX.latMax&&p.lon>=BOX.lonMin&&p.lon<=BOX.lonMax;}
 
-var S={user:null,profile:null,tariffs:null,places:[],rides:[],tab:'ride',cat:'eco',from:null,to:null,route:null,map:null,layer:null,users:[],ledger:[],payments:[],onlineCount:0,busy:false};
+var S={user:null,profile:null,tariffs:null,places:[],rides:[],tab:'ride',cat:'eco',from:null,to:null,route:null,map:null,layer:null,users:[],ledger:[],payments:[],onlineCount:0,busy:false,chat:[],chatSeen:0};
 
 function $(s,r){return (r||document).querySelector(s);}
 function h(tag,attrs){
@@ -213,11 +213,45 @@ async function loadUsers(){
   var r=await sb.from('profiles').select('*').order('created_at');S.users=r.data||[];
 }
 var chan;
+function isDriverUser(){return !!(S.profile&&(S.profile.role==='driver'||S.profile.can_drive||S.profile.role==='admin'));}
 function subscribe(){
   if(chan)sb.removeChannel(chan);
-  chan=sb.channel('rides').on('postgres_changes',{event:'*',schema:'public',table:'rides'},function(){loadRides();}).subscribe();
+  chan=sb.channel('rides').on('postgres_changes',{event:'*',schema:'public',table:'rides'},function(){loadRides();})
+    .on('postgres_changes',{event:'*',schema:'public',table:'profiles'},function(){refreshOnline();})
+    .on('postgres_changes',{event:'*',schema:'public',table:'driver_messages'},function(){loadChat();}).subscribe();
 }
-setInterval(function(){if(S.user&&!document.hidden){loadRides();}},20000);
+async function refreshOnline(){
+  if(!S.profile||S.profile.role!=='admin')return;
+  var before=JSON.stringify(S.users.map(function(u){return [u.id,u.is_online];}));
+  await loadUsers();
+  var after=JSON.stringify(S.users.map(function(u){return [u.id,u.is_online];}));
+  var a=document.activeElement;
+  if(before!==after&&S.tab==='admin'&&!(a&&/INPUT|SELECT/.test(a.tagName)&&$('#app').contains(a)))render();
+}
+function chatSeenKey(){return 'ubeer_chat_seen_'+(S.user?S.user.id:'');}
+function unreadChat(){
+  var n=0;S.chat.forEach(function(m){if(new Date(m.created_at).getTime()>S.chatSeen&&m.user_id!==S.user.id)n++;});return n;
+}
+function markChatSeen(){
+  var last=S.chat.length?new Date(S.chat[S.chat.length-1].created_at).getTime():Date.now();
+  S.chatSeen=Math.max(S.chatSeen,last);
+  try{localStorage.setItem(chatSeenKey(),String(S.chatSeen));}catch(e){}
+}
+async function loadChat(){
+  if(!isDriverUser())return;
+  var r=await sb.from('driver_messages').select('*').order('created_at',{ascending:false}).limit(100);
+  if(r.error)return;
+  var before=S.chat.length?S.chat[S.chat.length-1].id:0;
+  S.chat=(r.data||[]).reverse();
+  var after=S.chat.length?S.chat[S.chat.length-1].id:0;
+  if(S.tab==='chat'){markChatSeen();if(before!==after)drawChat();}
+  else if(before!==after)updateTabBadge();
+}
+function updateTabBadge(){
+  var b=document.getElementById('chatTab');if(!b)return;
+  var n=unreadChat();b.textContent=n?'Chat ('+n+')':'Chat';
+}
+setInterval(function(){if(S.user&&!document.hidden){loadRides();loadChat();refreshOnline();}},20000);
 
 /* ---------- autenticação ---------- */
 async function boot(){
@@ -225,7 +259,7 @@ async function boot(){
   var s=(await sb.auth.getSession()).data.session;
   sb.auth.onAuthStateChange(function(ev,session){
     if(ev==='PASSWORD_RECOVERY'){RECOVERY=true;render();}
-    if(ev==='SIGNED_OUT'){S.user=null;S.profile=null;S.rides=[];render();}
+    if(ev==='SIGNED_OUT'){S.user=null;S.profile=null;S.rides=[];S.chat=[];render();}
   });
   if(RECOVERY){render();return;}
   if(s){S.user=s.user;await afterLogin();}else render();
@@ -236,6 +270,8 @@ async function afterLogin(){
   S.tab=S.profile&&(S.profile.role==='driver'||S.profile.can_drive)?'drive':'ride';
   await loadRides();subscribe();
   if(S.profile&&S.profile.role==='admin')await loadUsers();
+  try{S.chatSeen=+localStorage.getItem(chatSeenKey())||0;}catch(e){S.chatSeen=0;}
+  await loadChat();
   await loadLedger();
   render();
   ensurePush();
@@ -282,13 +318,19 @@ function render(){
   if(!S.user){app.append(authView(),infoCard());return;}
   if(!S.profile){return;}
   var isD=S.profile.role==='driver'||S.profile.can_drive;
+  var isA=S.profile.role==='admin';
   var tabs=[['ride','Pedir viagem']];
   if(isD)tabs=[['drive','Condutor'],['ride','Pedir viagem']];
-  if(S.profile.role==='admin')tabs=isD?[['drive','Condutor'],['ride','Pedir viagem'],['admin','Gestão']]:[['ride','Pedir viagem'],['admin','Gestão']];
+  if(isD||isA)tabs.push(['chat','Chat']);
+  if(isA)tabs.push(['admin','Gestão']);
+  if(!tabs.some(function(t){return t[0]===S.tab;}))S.tab=tabs[0][0];
+  if(S.tab==='chat')markChatSeen();
   app.append(h('div',{class:'tabs'},tabs.map(function(t){
-    return h('button',{class:'btn '+(S.tab===t[0]?'':'ghost'),onclick:function(){S.tab=t[0];render();}},t[1]);})));
+    var lbl=t[1];if(t[0]==='chat'&&S.tab!=='chat'){var n=unreadChat();if(n)lbl='Chat ('+n+')';}
+    return h('button',{id:t[0]==='chat'?'chatTab':null,class:'btn '+(S.tab===t[0]?'':'ghost'),onclick:function(){S.tab=t[0];render();}},lbl);})));
   if(S.tab==='ride')rideView(app);
   else if(S.tab==='drive')driveView(app);
+  else if(S.tab==='chat')chatView(app);
   else adminView(app);
 }
 function infoCard(){
@@ -494,8 +536,56 @@ async function toggleOnline(){
   await loadPublic();render();
 }
 
+/* --- chat dos condutores --- */
+var chatList=null;
+function drawChat(){
+  if(!chatList||!document.body.contains(chatList))return;
+  var nearEnd=chatList.scrollHeight-chatList.scrollTop-chatList.clientHeight<80;
+  chatList.textContent='';
+  if(!S.chat.length)chatList.append(h('p',{class:'small muted',text:'Ainda não há mensagens. Escreve a primeira!'}));
+  S.chat.forEach(function(m){
+    var mine=m.user_id===S.user.id;
+    var canDel=S.profile.role==='admin';
+    chatList.append(h('div',{style:'display:flex;flex-direction:column;align-items:'+(mine?'flex-end':'flex-start')},
+      h('div',{style:'max-width:85%;padding:8px 12px;border-radius:14px;background:'+(mine?'var(--accent)':'var(--line)')+';color:'+(mine?'var(--accent-fg)':'inherit')+';word-break:break-word;white-space:pre-wrap',text:m.body}),
+      h('div',{class:'small muted',text:(mine?'Tu':m.name)+' · '+fmtDate(m.created_at)}),
+      canDel?h('button',{class:'btn ghost sm',style:'padding:2px 8px;font-size:12px',onclick:async function(){
+        if(!confirm('Apagar esta mensagem?'))return;
+        var d=await sb.from('driver_messages').delete().eq('id',m.id).select('id');
+        if(d.error||!d.data||!d.data.length){toast('Não foi possível apagar.');return;}
+        await loadChat();drawChat();}},'Apagar'):null));
+  });
+  if(nearEnd||chatList.dataset.first!=='0'){chatList.scrollTop=chatList.scrollHeight;chatList.dataset.first='0';}
+}
+function chatView(app){
+  chatList=h('div',{style:'display:flex;flex-direction:column;gap:10px;max-height:55vh;overflow-y:auto;padding:4px 2px'});chatList.dataset.first='1';
+  var inp=h('textarea',{rows:'2',maxlength:'500',placeholder:'Escreve uma mensagem para os condutores…',style:'resize:none'});
+  async function send(){
+    var t=inp.value.trim();if(!t)return;
+    inp.disabled=true;
+    var r=await sb.from('driver_messages').insert({body:t});
+    inp.disabled=false;
+    if(r.error){toast(errMsg(r.error));return;}
+    inp.value='';await loadChat();drawChat();inp.focus();
+  }
+  var btn=h('button',{class:'btn',onclick:send},'Enviar');
+  inp.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}});
+  app.append(h('div',{class:'card'},h('h2',{text:'Chat dos condutores'}),
+    h('p',{class:'small muted',text:'Só os condutores e a gestão veem estas mensagens.'}),chatList,h('label',null,inp),btn));
+  drawChat();
+}
+
 /* --- administração --- */
+function onlineCard(){
+  var on=S.users.filter(function(u){return (u.role==='driver'||u.can_drive)&&u.is_online;});
+  var off=S.users.filter(function(u){return (u.role==='driver'||u.can_drive)&&!u.is_online;});
+  return h('div',{class:'card'},h('h2',{text:'Condutores online agora ('+on.length+')'}),
+    on.length?h('div',{class:'list'},on.map(function(u){return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:(u.name||u.email)+(u.id===S.user.id?' (tu)':'')}),h('span',{class:'pill',text:'Online'})),
+      u.phone?h('div',{class:'small muted',text:u.phone}):null);})):h('p',{class:'muted',text:'Neste momento não há condutores online.'}),
+    off.length?h('p',{class:'small muted',text:'Offline: '+off.map(function(u){return u.name||u.email;}).join(', ')}):null);
+}
 function adminView(app){
+  app.append(onlineCard());
   var t=S.tariffs,f={};
   function num(k,v,step){f[k]=h('input',{type:'number',step:step||'0.01',min:'0',value:v});return f[k];}
   var catKeys=Object.keys(t.categories);
