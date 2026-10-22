@@ -402,7 +402,6 @@ function suggestInput(label,key){
   inp.addEventListener('blur',function(){ul.hidden=true;
     if(!S[key]&&inp.value){var q=norm(inp.value),p=S.places.filter(function(x){return norm(x.name)===q;})[0];if(p){S[key]={name:p.name,lat:p.lat,lon:p.lon};onPoints();}}});
   var field=h('label',null,label,h('div',{class:'sugg'},inp,ul));
-  if(key!=='from')return field;
   var gbtn=h('button',{class:'btn ghost sm',type:'button',onclick:function(){
     if(!navigator.geolocation){toast('Este telemóvel não permite obter a localização.');return;}
     gbtn.disabled=true;gbtn.textContent='A obter localização…';
