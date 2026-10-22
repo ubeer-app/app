@@ -377,10 +377,23 @@ function authView(){
 }
 
 /* --- sugestões de local --- */
+async function revName(lat,lon){
+  var nm='Ponto no mapa';
+  try{
+    var r=await fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&accept-language=pt&lat='+lat+'&lon='+lon);
+    var d=await r.json(),a=d.address||{};
+    var rua=a.road?(a.road+(a.house_number?' '+a.house_number:'')):'';
+    var loc=a.village||a.hamlet||a.suburb||a.town||a.city||'';
+    var t=[rua,loc].filter(Boolean).join(', ');
+    if(t)nm=t;
+  }catch(e){}
+  return nm;
+}
 function suggestInput(label,key){
   var inp=h('input',{placeholder:'Localidade, rua ou local',autocomplete:'off'}),ul=h('ul',{hidden:true}),timer;
   if(S[key])inp.value=S[key].name;
   function pick(p){S[key]=p;inp.value=p.name;ul.hidden=true;onPoints();}
+  S.pickers=S.pickers||{};S.pickers[key]=pick;
   function show(items){ul.textContent='';if(!items.length){ul.hidden=true;return;}
     items.forEach(function(p){ul.append(h('li',{onmousedown:function(e){e.preventDefault();pick(p);}},p.name,p.sub?h('span',{text:' · '+p.sub}):null));});ul.hidden=false;}
   inp.addEventListener('input',function(){
@@ -409,15 +422,7 @@ function suggestInput(label,key){
     navigator.geolocation.getCurrentPosition(async function(pos){
       var lat=pos.coords.latitude,lon=pos.coords.longitude,acc=Math.round(pos.coords.accuracy||0);
       if(!inArea({lat:lat,lon:lon})){done();toast('Estás fora da zona onde a Ubeer funciona.');return;}
-      var nm='A minha localização';
-      try{
-        var r=await fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&accept-language=pt&lat='+lat+'&lon='+lon);
-        var d=await r.json(),a=d.address||{};
-        var rua=a.road?(a.road+(a.house_number?' '+a.house_number:'')):'';
-        var loc=a.village||a.hamlet||a.suburb||a.town||a.city||'';
-        var t=[rua,loc].filter(Boolean).join(', ');
-        if(t)nm='A minha localização ('+t+')';
-      }catch(e){}
+      var rn=await revName(lat,lon),nm=rn==='Ponto no mapa'?'A minha localização':'A minha localização ('+rn+')';
       done();pick({name:nm,lat:lat,lon:lon});
       toast(acc>150?'Localização obtida, mas pouco precisa (±'+acc+' m). Confirma no mapa.':'Localização obtida (±'+acc+' m).');
     },function(err){
@@ -425,7 +430,12 @@ function suggestInput(label,key){
       toast(err.code===1?'Sem permissão para a localização. Ativa-a nas definições do browser para este site.':err.code===3?'Demorou demasiado. Tenta outra vez, de preferência ao ar livre.':'Não foi possível obter a localização.');
     },{enableHighAccuracy:true,timeout:15000,maximumAge:0});
   }},'Usar a minha localização atual');
-  return h('div',{style:'display:flex;flex-direction:column;gap:8px'},field,gbtn);
+  var mbtn=h('button',{class:'btn ghost sm',type:'button',onclick:function(){
+    S.pick=key;var m=document.getElementById('map');
+    if(m){m.style.outline='3px solid var(--accent)';m.scrollIntoView({behavior:'smooth',block:'center'});}
+    toast('Toca no mapa para marcar o '+(key==='from'?'ponto de recolha':'destino')+'.');
+  }},'Escolher no mapa');
+  return h('div',{style:'display:flex;flex-direction:column;gap:8px'},field,h('div',{style:'display:flex;gap:8px;flex-wrap:wrap'},gbtn,mbtn));
 }
 var routeSeq=0;
 async function onPoints(clearOnly){
@@ -476,6 +486,7 @@ function rideView(app){
         h('p',{class:'muted',text:'À espera que um condutor aceite…'}),
       ['requested','accepted'].indexOf(act.status)>-1?h('button',{class:'btn danger',onclick:function(){rpc('cancel_ride',{p_id:act.id},'Viagem cancelada.');}},'Cancelar viagem'):null));
   }else{
+    S.pick=null;
     var mapEl=h('div',{id:'map'}),est=h('div',{id:'est'});
     app.append(h('div',{class:'card'},h('h2',{text:'Para onde vais?'}),
       S.onlineCount?null:h('p',{class:'small',style:'color:var(--warn)',text:'Atenção: neste momento não há condutores disponíveis. Podes pedir na mesma e o pedido fica à espera.'}),
@@ -483,6 +494,15 @@ function rideView(app){
     setTimeout(function(){
       S.map=L.map(mapEl).setView([40.17,-8.75],11);
       L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'© OpenStreetMap'}).addTo(S.map);
+      S.map.on('click',async function(e){
+        var k=S.pick;if(!k||!S.pickers||!S.pickers[k])return;
+        var lat=e.latlng.lat,lon=e.latlng.lng;
+        if(!inArea({lat:lat,lon:lon})){toast('Esse ponto está fora da zona da Ubeer.');return;}
+        S.pick=null;mapEl.style.outline='';
+        var nm=await revName(lat,lon);
+        S.pickers[k]({name:nm==='Ponto no mapa'?nm:'Mapa: '+nm,lat:lat,lon:lon});
+        toast('Ponto marcado.');
+      });
       drawMap();updateEstimate();
     },0);
   }
