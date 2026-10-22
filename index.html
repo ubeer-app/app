@@ -323,6 +323,10 @@ function render(){
   var app=$('#app');app.textContent='';
   app.append(h('header',null,
     h('div',{class:'brand',style:'display:flex;align-items:center;gap:8px;flex-wrap:wrap'},h('img',{src:'icon-192.png',alt:'',width:'38',height:'38',style:'border-radius:9px;flex:none'}),'Ubeer',h('small',{text:'Figueira da Foz · Montemor-o-Velho'})),
+    S.user?h('button',{class:'btn ghost sm',onclick:async function(){
+      var p=prompt('Escreve a nova password (mínimo 6 caracteres):');if(!p)return;
+      if(p.length<6){toast('A password tem de ter pelo menos 6 caracteres.');return;}
+      var r=await sb.auth.updateUser({password:p});toast(r.error?r.error.message:'Password alterada.');}},'Mudar password'):null,
     S.user?h('button',{class:'btn ghost sm',onclick:doLogout},'Sair'):null));
   if(RECOVERY){app.append(resetView());return;}
   if(!S.user){app.append(authView(),infoCard());return;}
@@ -359,7 +363,7 @@ function resetView(){
 }
 function authView(){
   if(authMode==='sent')return h('div',{class:'card'},h('h2',{text:'Verifica o email'}),
-    h('p',{class:'muted',text:'Se esse email tiver conta, enviámos-te um link para escolheres uma palavra-passe nova. Vê também o spam.'}),
+    h('p',{class:'muted',text:'Se esse email tiver conta, enviámos-te um link para escolheres uma palavra-passe nova. Vê também o spam. Se não chegar, pede à Vera uma password temporária.'}),
     h('button',{class:'btn ghost',onclick:function(){authMode='login';render();}},'Voltar a entrar'));
   if(authMode==='forgot'){
     var fe=h('input',{type:'email',autocomplete:'email',required:true});
@@ -885,6 +889,13 @@ function adminView(app){
         [['passenger','Passageiro'],['driver','Condutor'],['admin','Administrador']].map(function(o){return h('option',{value:o[0],selected:u.role===o[0],text:o[1]});}));
       return h('div',{class:'item'},h('b',{text:u.name||u.email}),h('div',{class:'small muted',text:(u.email||'')+(u.phone?' · '+u.phone:'')}),
         u.id===S.user.id?h('div',{class:'small muted',text:'(tu)'}):sel,
+        u.id===S.user.id?null:h('button',{class:'btn ghost sm',onclick:async function(){
+          if(!confirm('Criar uma password temporária para '+(u.name||u.email)+'? A password antiga deixa de funcionar.'))return;
+          var ch='abcdefghjkmnpqrstuvwxyz23456789',pw='';for(var i=0;i<8;i++)pw+=ch[Math.floor(Math.random()*ch.length)];
+          var r=await sb.rpc('admin_set_password',{p_user:u.id,p_pass:pw});
+          if(r.error){toast(errMsg(r.error));return;}
+          S.tempPass=S.tempPass||{};S.tempPass[u.id]=pw;toast('Password temporária criada.');render();}},'Nova password temporária'),
+        S.tempPass&&S.tempPass[u.id]?h('div',{class:'small'},'Envia por mensagem: ',h('b',{text:S.tempPass[u.id]}),' (a pessoa deve entrar e depois mudar a password).'):null,
         u.role==='driver'?null:h('label',{style:'flex-direction:row;align-items:center;gap:8px'},
           h('input',{type:'checkbox',style:'width:auto',checked:u.can_drive,onchange:async function(e){
             var r=await sb.from('profiles').update({can_drive:e.target.checked}).eq('id',u.id);
