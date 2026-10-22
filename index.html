@@ -143,7 +143,7 @@ function pushCard(mode){
 var BOX={latMin:39.98,latMax:40.36,lonMin:-8.95,lonMax:-8.55};
 function inArea(p){return p.lat>=BOX.latMin&&p.lat<=BOX.latMax&&p.lon>=BOX.lonMin&&p.lon<=BOX.lonMax;}
 
-var S={user:null,profile:null,tariffs:null,places:[],rides:[],tab:'ride',cat:'eco',from:null,to:null,route:null,map:null,layer:null,users:[],ledger:[],payments:[],onlineCount:0,busy:false,chat:[],chatSeen:0,rmsgs:[],rmsgRide:null,cancelling:false,cancelSel:'',cancelTxt:'',offer:null,offerEdited:false};
+var S={user:null,profile:null,tariffs:null,places:[],rides:[],tab:'ride',cat:'eco',from:null,to:null,route:null,map:null,layer:null,users:[],ledger:[],payments:[],onlineCount:0,busy:false,chat:[],chatSeen:0,rmsgs:[],rmsgRide:null,cancelling:null,cancelSel:'',cancelTxt:'',offer:null,offerEdited:false,mode:'now',bDate:'',bFrom:'09:00',bTo:'10:00'};
 
 function $(s,r){return (r||document).querySelector(s);}
 function h(tag,attrs){
@@ -471,8 +471,9 @@ function updateEstimate(){var box=$('#est');if(!box)return;box.textContent='';
         h('b',{text:cats[k].label}),h('span',{class:'small muted',text:cats[k].note}),h('div',{class:'price',text:eur(fare(km,mn,k))}));})):
       null,
     offerBox(fare(km,mn,S.cat)),
-    h('button',{class:'btn',id:'btnReq',onclick:requestRide},'Pedir viagem · '+eur(S.offer!=null?S.offer:fare(km,mn,S.cat))));
+    h('button',{class:'btn',id:'btnReq',onclick:requestRide},reqLabel(S.offer!=null?S.offer:fare(km,mn,S.cat))));
 }
+function reqLabel(v){return (S.mode==='later'?'Reservar viagem · ':'Pedir viagem · ')+eur(v);}
 function offerBounds(sug){return {min:Math.round(sug*0.7*100)/100,max:Math.round(sug*2*100)/100};}
 function offerBox(sug){
   var b=offerBounds(sug);
@@ -486,7 +487,7 @@ function offerBox(sug){
     hint.style.color=ok?'':'var(--bad)';
     hint.textContent=ok?(Math.abs(S.offer-sug)<0.005?'Podes propor outro valor. O condutor decide se aceita.':(S.offer<sug?'Oferta abaixo do preço sugerido: pode demorar mais a ser aceite.':'Oferta acima do preço sugerido: é mais provável ser aceite depressa.')):'A oferta tem de ficar entre '+eur(b.min)+' e '+eur(b.max)+'.';
     var br=document.getElementById('btnReq');
-    if(br){br.disabled=!ok;br.textContent='Pedir viagem · '+eur(ok?S.offer:sug);}
+    if(br){br.disabled=!ok;br.textContent=reqLabel(ok?S.offer:sug);}
   }
   function bump(d){var v=parseFloat(String(inp.value).replace(',','.'));if(isNaN(v))v=S.offer;v=Math.min(b.max,Math.max(b.min,Math.round((v+d)*100)/100));inp.value=v.toFixed(2);sync();}
   inp.addEventListener('input',sync);
@@ -505,13 +506,22 @@ function drawMap(){
   else if(pts.length===2)L.polyline(pts,{color:'#14532d',dashArray:'6 8'}).addTo(S.layer);
   if(pts.length)S.map.fitBounds(pts,{padding:[30,30],maxZoom:15});
 }
-function activeRide(){return S.rides.filter(function(r){return r.passenger_id===S.user.id&&['requested','accepted','ongoing'].indexOf(r.status)>-1;})[0];}
+function activeRide(){return S.rides.filter(function(r){return r.passenger_id===S.user.id&&['requested','accepted','ongoing'].indexOf(r.status)>-1&&(!r.scheduled_from||r.status==='ongoing');})[0];}
 function navLinks(r){
   var dest=r.status==='ongoing'?{lat:r.to_lat,lon:r.to_lon,n:r.to_name}:{lat:r.from_lat,lon:r.from_lon,n:r.from_name};
   var q=dest.lat!=null?dest.lat+','+dest.lon:encodeURIComponent(dest.n+', Portugal');
   return h('a',{class:'btn ghost sm',target:'_blank',rel:'noopener',href:'https://www.google.com/maps/dir/?api=1&destination='+q+'&travelmode=driving',text:'Abrir no Google Maps'});
 }
 var CANCEL_REASONS=['Demora demasiado','Mudei de ideias','Enganei-me na origem ou no destino','Encontrei outro transporte','Já não preciso','Outro motivo'];
+function fmtWindow(r){
+  var a=new Date(r.scheduled_from),b=new Date(r.scheduled_to);
+  var d=a.toLocaleDateString('pt-PT',{weekday:'short',day:'numeric',month:'short'});
+  var t=function(x){return x.toLocaleTimeString('pt-PT',{hour:'2-digit',minute:'2-digit'});};
+  return d+', '+t(a)+'–'+t(b);
+}
+function windowLine(r){
+  return r.scheduled_from?h('div',{class:'small',style:'font-weight:700',text:'Reserva: '+fmtWindow(r)}):null;
+}
 function offerLine(r){
   if(r.suggested_price==null)return null;
   var d=Number(r.price)-Number(r.suggested_price);
@@ -535,9 +545,29 @@ function cancelForm(act){
       h('button',{class:'btn danger grow',onclick:async function(){
         var why=S.cancelSel==='Outro motivo'?S.cancelTxt.trim():S.cancelSel;
         if(!why){toast(S.cancelSel==='Outro motivo'?'Escreve o motivo do cancelamento.':'Escolhe o motivo do cancelamento.');return;}
-        S.cancelling=false;S.cancelSel='';S.cancelTxt='';
+        S.cancelling=null;S.cancelSel='';S.cancelTxt='';
         rpc('cancel_ride_reason',{p_id:act.id,p_reason:why},'Viagem cancelada.');}},'Confirmar cancelamento'),
-      h('button',{class:'btn ghost',onclick:function(){S.cancelling=false;render();}},'Voltar')));
+      h('button',{class:'btn ghost',onclick:function(){S.cancelling=null;render();}},'Voltar')));
+}
+function todayStr(){var d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+function bookingFields(){
+  var d=h('input',{type:'date',min:todayStr(),value:S.bDate,oninput:function(){S.bDate=d.value;}});
+  var a=h('input',{type:'time',value:S.bFrom,oninput:function(){S.bFrom=a.value;}});
+  var b=h('input',{type:'time',value:S.bTo,oninput:function(){S.bTo=b.value;}});
+  return h('div',{class:'item'},h('b',{text:'Quando?'}),
+    h('label',null,'Dia',d),
+    h('div',{class:'grid2'},h('label',null,'Das',a),h('label',null,'Às',b)),
+    h('p',{class:'small muted',text:'Indica o intervalo em que podes ser recolhido. O condutor que aceitar combina contigo a hora certa. Mínimo 30 minutos de antecedência.'}));
+}
+function bookingWindow(){
+  if(!S.bDate||!S.bFrom||!S.bTo)return {err:'Escolhe o dia e o intervalo de horário.'};
+  var p=S.bDate.split('-').map(Number),f=S.bFrom.split(':').map(Number),t=S.bTo.split(':').map(Number);
+  var a=new Date(p[0],p[1]-1,p[2],f[0],f[1]),b=new Date(p[0],p[1]-1,p[2],t[0],t[1]);
+  if(isNaN(a)||isNaN(b))return {err:'Data ou hora inválida.'};
+  if(a.getTime()<Date.now()+30*60000)return {err:'A reserva tem de ser com pelo menos 30 minutos de antecedência.'};
+  if(b.getTime()<a.getTime()+15*60000)return {err:'O intervalo tem de ter pelo menos 15 minutos (a hora final tem de ser depois da inicial).'};
+  if(b.getTime()>a.getTime()+6*3600000)return {err:'O intervalo não pode passar de 6 horas.'};
+  return {from:a,to:b};
 }
 function changeOffer(act){
   var b=offerBounds(Number(act.suggested_price));
@@ -558,13 +588,17 @@ function rideView(app){
       h('p',{class:'small muted',text:Number(act.km).toFixed(1).replace('.',',')+' km · cerca de '+Math.round(act.minutes)+' min'}),
       act.driver_id?h('p',null,'Condutor: ',h('b',{text:act.driver_name||''}),act.driver_phone?h('span',null,' · ',h('a',{href:'tel:'+act.driver_phone,text:act.driver_phone})):null):
         h('p',{class:'muted',text:'À espera que um condutor aceite…'}),
-      ['requested','accepted'].indexOf(act.status)>-1?(S.cancelling?cancelForm(act):h('button',{class:'btn danger',onclick:function(){S.cancelling=true;render();}},'Cancelar viagem')):null));
+      ['requested','accepted'].indexOf(act.status)>-1?(S.cancelling===act.id?cancelForm(act):h('button',{class:'btn danger',onclick:function(){S.cancelling=act.id;render();}},'Cancelar viagem')):null));
     if(act.driver_id&&['accepted','ongoing'].indexOf(act.status)>-1){app.append(rideChatCard(act,'pax'));app.append(pushCard('pax'));}
   }else{
     S.pick=null;
     var mapEl=h('div',{id:'map'}),est=h('div',{id:'est'});
     app.append(h('div',{class:'card'},h('h2',{text:'Para onde vais?'}),
-      S.onlineCount?null:h('p',{class:'small',style:'color:var(--warn)',text:'Atenção: neste momento não há condutores disponíveis. Podes pedir na mesma e o pedido fica à espera.'}),
+      h('div',{class:'tabs'},
+        h('button',{class:'btn '+(S.mode==='now'?'':'ghost'),onclick:function(){S.mode='now';render();}},'Agora'),
+        h('button',{class:'btn '+(S.mode==='later'?'':'ghost'),onclick:function(){S.mode='later';render();}},'Reservar para mais tarde')),
+      S.mode==='now'&&!S.onlineCount?h('p',{class:'small',style:'color:var(--warn)',text:'Atenção: neste momento não há condutores disponíveis. Podes pedir na mesma e o pedido fica à espera.'}):null,
+      S.mode==='later'?bookingFields():null,
       suggestInput('Origem','from'),suggestInput('Destino','to'),est,mapEl));
     setTimeout(function(){
       S.map=L.map(mapEl).setView([40.17,-8.75],11);
@@ -581,7 +615,26 @@ function rideView(app){
       drawMap();updateEstimate();
     },0);
   }
+  var rc=bookingsCard();if(rc)app.append(rc);
   app.append(historyCard());
+}
+function bookingsCard(){
+  var mine=S.rides.filter(function(r){return r.passenger_id===S.user.id&&r.scheduled_from&&['requested','accepted'].indexOf(r.status)>-1;})
+    .sort(function(a,b){return new Date(a.scheduled_from)-new Date(b.scheduled_from);});
+  if(!mine.length)return null;
+  var now=Date.now();
+  return h('div',{class:'card'},h('h2',{text:'As minhas reservas'}),h('div',{class:'list'},mine.map(function(r){
+    var expired=r.status==='requested'&&new Date(r.scheduled_to).getTime()<now;
+    return h('div',{class:'item'},
+      h('div',{class:'row'},h('b',{class:'grow',text:fmtWindow(r)}),expired?h('span',{class:'pill bad',text:'Expirada'}):pill(r.status==='requested'?'requested':'accepted')),
+      h('div',null,h('b',{text:r.from_name}),h('span',{class:'muted',text:'  →  '}),h('b',{text:r.to_name})),
+      h('div',{class:'price',text:eur(r.price)}),offerLine(r),
+      r.status==='accepted'?h('p',null,'Condutor: ',h('b',{text:r.driver_name||''}),r.driver_phone?h('span',null,' · ',h('a',{href:'tel:'+r.driver_phone,text:r.driver_phone})):null,
+        h('span',{class:'small muted',text:'  — vai combinar contigo a hora de recolha.'})):
+        (expired?h('p',{class:'small muted',text:'Nenhum condutor aceitou a tempo. Podes cancelar e fazer uma nova reserva.'}):h('p',{class:'small muted',text:'À espera que um condutor aceite. Os condutores foram avisados.'})),
+      r.status==='requested'&&!expired&&r.suggested_price!=null?changeOffer(r):null,
+      S.cancelling===r.id?cancelForm(r):h('button',{class:'btn danger',onclick:function(){S.cancelling=r.id;render();}},'Cancelar reserva'));
+  })));
 }
 function historyCard(){
   var mine=S.rides.filter(function(r){return r.passenger_id===S.user.id&&['completed','cancelled'].indexOf(r.status)>-1;}).slice(0,10);
@@ -589,7 +642,7 @@ function historyCard(){
   if(!mine.length)c.append(h('div',{class:'empty',text:'Ainda não fizeste viagens.'}));
   else c.append(h('div',{class:'list'},mine.map(function(r){
     return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
-      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+eur(r.price)}),reasonLine(r));})));
+      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+eur(r.price)}),windowLine(r),reasonLine(r));})));
   return c;
 }
 async function requestRide(){
@@ -598,11 +651,19 @@ async function requestRide(){
   S.busy=true;
   var km=Math.round(S.route.km*10)/10,mn=Math.round(S.route.min),sug=fare(km,mn,S.cat);
   var offer=(S.offer!=null&&Math.abs(S.offer-sug)>=0.005)?S.offer:null;
-  var r=await sb.rpc('request_ride_offer',{p_from_name:S.from.name,p_from_lat:S.from.lat,p_from_lon:S.from.lon,p_to_name:S.to.name,p_to_lat:S.to.lat,p_to_lon:S.to.lon,
-    p_km:km,p_minutes:mn,p_category:S.cat,p_offer:offer});
+  var args={p_from_name:S.from.name,p_from_lat:S.from.lat,p_from_lon:S.from.lon,p_to_name:S.to.name,p_to_lat:S.to.lat,p_to_lon:S.to.lon,
+    p_km:km,p_minutes:mn,p_category:S.cat,p_offer:offer},fn='request_ride_offer';
+  if(S.mode==='later'){
+    var w=bookingWindow();
+    if(w.err){S.busy=false;toast(w.err);return;}
+    args.p_when_from=w.from.toISOString();args.p_when_to=w.to.toISOString();fn='request_booking';
+  }
+  var r=await sb.rpc(fn,args);
   S.busy=false;
   if(r.error){toast(errMsg(r.error));return;}
-  S.from=S.to=S.route=null;S.offer=null;S.map=null;toast('Pedido enviado.');await loadRides();
+  var wasLater=S.mode==='later';
+  S.from=S.to=S.route=null;S.offer=null;S.offerEdited=false;S.map=null;S.mode='now';S.bDate='';
+  toast(wasLater?'Reserva enviada. Os condutores foram avisados.':'Pedido enviado.');await loadRides();
 }
 async function rpc(fn,args,okMsg){
   if(S.busy)return;S.busy=true;var r=await sb.rpc(fn,args);S.busy=false;
@@ -613,7 +674,8 @@ async function rpc(fn,args,okMsg){
 /* --- condutor --- */
 function driveView(app){
   var p=S.profile,mine=S.rides.filter(function(r){return r.driver_id===p.id;});
-  var act=mine.filter(function(r){return ['accepted','ongoing'].indexOf(r.status)>-1;})[0];
+  var act=mine.filter(function(r){return ['accepted','ongoing'].indexOf(r.status)>-1&&(!r.scheduled_from||r.status==='ongoing');})[0];
+  var myBookings=mine.filter(function(r){return r.status==='accepted'&&r.scheduled_from;}).sort(function(a,b){return new Date(a.scheduled_from)-new Date(b.scheduled_from);});
   var today=new Date().toDateString();
   var earned=mine.filter(function(r){return r.status==='completed'&&new Date(r.updated_at).toDateString()===today;}).reduce(function(a,r){return a+Number(r.driver_earnings);},0);
   app.append(h('div',{class:'card'},h('div',{class:'row'},h('h2',{class:'grow',text:'Olá, '+p.name}),
@@ -637,7 +699,7 @@ function driveView(app){
         act.status==='accepted'?h('button',{class:'btn ghost',onclick:function(){rpc('drop_ride',{p_id:act.id},'Viagem devolvida.');}},'Largar'):null)));
     app.append(rideChatCard(act,'driver'));
   }else if(p.is_online){
-    var open=S.rides.filter(function(r){return r.status==='requested';});
+    var open=S.rides.filter(function(r){return r.status==='requested'&&!r.scheduled_from;});
     var c=h('div',{class:'card'},h('h2',{text:'Pedidos disponíveis'}));
     if(!open.length)c.append(h('div',{class:'empty',text:'Sem pedidos por agora. Aparecem aqui sozinhos.'}));
     else c.append(h('div',{class:'list'},open.map(function(r){
@@ -647,10 +709,29 @@ function driveView(app){
         h('button',{class:'btn',onclick:function(){rpc('accept_ride',{p_id:r.id},'Viagem aceite.');}},'Aceitar'));})));
     app.append(c);
   }else app.append(h('div',{class:'card'},h('div',{class:'empty',text:'Fica online para receber pedidos.'})));
+  if(myBookings.length)app.append(h('div',{class:'card'},h('h2',{text:'As minhas reservas'}),h('div',{class:'list'},myBookings.map(function(r){
+    return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:fmtWindow(r)}),h('span',{class:'pill ok',text:'Aceite'})),
+      h('div',null,h('b',{text:r.from_name}),h('span',{class:'muted',text:'  →  '}),h('b',{text:r.to_name})),
+      h('p',null,'Passageiro: ',h('b',{text:r.passenger_name}),r.passenger_phone?h('span',null,' · ',h('a',{href:'tel:'+r.passenger_phone,text:r.passenger_phone})):null),
+      offerLine(r),split(r),
+      h('p',{class:'small muted',text:'Combina com o passageiro a hora de recolha dentro do intervalo.'}),
+      h('div',{class:'row'},navLinks(r),
+        h('button',{class:'btn grow',onclick:function(){rpc('advance_ride',{p_id:r.id},'Viagem iniciada.');}},'Iniciar viagem'),
+        h('button',{class:'btn ghost',onclick:function(){if(confirm('Largar esta reserva? Volta a ficar disponível para outros condutores.'))rpc('drop_ride',{p_id:r.id},'Reserva devolvida.');}},'Largar')));
+  }))));
+  var openB=S.rides.filter(function(r){return r.status==='requested'&&r.scheduled_from&&new Date(r.scheduled_to).getTime()>=Date.now()&&r.passenger_id!==p.id;})
+    .sort(function(a,b){return new Date(a.scheduled_from)-new Date(b.scheduled_from);});
+  if(openB.length)app.append(h('div',{class:'card'},h('h2',{text:'Reservas disponíveis'}),
+    h('p',{class:'small muted',text:'Viagens marcadas para mais tarde. Podes aceitar mesmo estando offline.'}),
+    h('div',{class:'list'},openB.map(function(r){
+      return h('div',{class:'item'},h('b',{text:fmtWindow(r)}),h('b',{text:r.from_name+' → '+r.to_name}),
+        h('div',{class:'small muted',text:Number(r.km).toFixed(1).replace('.',',')+' km · '+Math.round(r.minutes)+' min'}),
+        offerLine(r),split(r),
+        h('button',{class:'btn',onclick:function(){rpc('accept_ride',{p_id:r.id},'Reserva aceite.');}},'Aceitar reserva'));}))));
   var done=mine.filter(function(r){return ['completed','cancelled'].indexOf(r.status)>-1;}).slice(0,10);
   if(done.length)app.append(h('div',{class:'card'},h('h2',{text:'Últimas viagens'}),h('div',{class:'list'},done.map(function(r){
     return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
-      h('div',{class:'small muted',text:fmtDate(r.updated_at)}),reasonLine(r),r.status==='completed'?split(r):null);}))));
+      h('div',{class:'small muted',text:fmtDate(r.updated_at)}),windowLine(r),reasonLine(r),r.status==='completed'?split(r):null);}))));
 }
 async function toggleOnline(){
   var r=await sb.from('profiles').update({is_online:!S.profile.is_online}).eq('id',S.user.id).select().single();
@@ -661,7 +742,7 @@ async function toggleOnline(){
 /* --- chat da viagem (cliente <-> condutor) --- */
 function chatRide(){
   if(!S.user)return null;
-  return S.rides.filter(function(r){return r.driver_id&&['accepted','ongoing'].indexOf(r.status)>-1&&(r.passenger_id===S.user.id||r.driver_id===S.user.id);})[0]||null;
+  return S.rides.filter(function(r){return r.driver_id&&['accepted','ongoing'].indexOf(r.status)>-1&&(!r.scheduled_from||r.status==='ongoing')&&(r.passenger_id===S.user.id||r.driver_id===S.user.id);})[0]||null;
 }
 var rcList=null;
 async function loadRideChat(){
@@ -839,7 +920,7 @@ function adminView(app){
     h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Viagens concluídas'}),h('b',{text:String(done.length)})),
       h('div',null,h('div',{class:'small muted',text:'Faturado'}),h('b',{text:eur(total)})),h('div',null,h('div',{class:'small muted',text:'Comissão Ubeer'}),h('b',{text:eur(comm)}))),
     h('div',{class:'list'},all.map(function(r){return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
-      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+r.passenger_name+(r.driver_name?' · '+r.driver_name:'')}),reasonLine(r),split(r),
+      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+r.passenger_name+(r.driver_name?' · '+r.driver_name:'')}),windowLine(r),reasonLine(r),split(r),
       h('div',{class:'row'},h('button',{class:'btn danger sm',onclick:async function(){
         var msg='Apagar esta viagem ('+r.from_name+' → '+r.to_name+', '+eur(r.price)+')?'+(r.status==='completed'?' Vai também sair das contas correntes.':'')+' Não dá para desfazer.';
         if(!confirm(msg))return;
