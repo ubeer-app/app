@@ -143,7 +143,7 @@ function pushCard(mode){
 var BOX={latMin:39.98,latMax:40.36,lonMin:-8.95,lonMax:-8.55};
 function inArea(p){return p.lat>=BOX.latMin&&p.lat<=BOX.latMax&&p.lon>=BOX.lonMin&&p.lon<=BOX.lonMax;}
 
-var S={user:null,profile:null,tariffs:null,places:[],rides:[],tab:'ride',cat:'eco',from:null,to:null,route:null,map:null,layer:null,users:[],ledger:[],payments:[],onlineCount:0,busy:false,chat:[],chatSeen:0,rmsgs:[],rmsgRide:null};
+var S={user:null,profile:null,tariffs:null,places:[],rides:[],tab:'ride',cat:'eco',from:null,to:null,route:null,map:null,layer:null,users:[],ledger:[],payments:[],onlineCount:0,busy:false,chat:[],chatSeen:0,rmsgs:[],rmsgRide:null,cancelling:false,cancelSel:'',cancelTxt:''};
 
 function $(s,r){return (r||document).querySelector(s);}
 function h(tag,attrs){
@@ -478,6 +478,26 @@ function navLinks(r){
   var q=dest.lat!=null?dest.lat+','+dest.lon:encodeURIComponent(dest.n+', Portugal');
   return h('a',{class:'btn ghost sm',target:'_blank',rel:'noopener',href:'https://www.google.com/maps/dir/?api=1&destination='+q+'&travelmode=driving',text:'Abrir no Google Maps'});
 }
+var CANCEL_REASONS=['Demora demasiado','Mudei de ideias','Enganei-me na origem ou no destino','Encontrei outro transporte','Já não preciso','Outro motivo'];
+function reasonLine(r){
+  return r.status==='cancelled'&&r.cancel_reason?h('div',{class:'small',style:'color:var(--bad)',text:'Motivo do cancelamento: '+r.cancel_reason}):null;
+}
+function cancelForm(act){
+  var sel=h('select',{onchange:function(){S.cancelSel=sel.value;txt.hidden=sel.value!=='Outro motivo';}},
+    h('option',{value:'',text:'Escolhe o motivo…',selected:!S.cancelSel}),
+    CANCEL_REASONS.map(function(m){return h('option',{value:m,text:m,selected:S.cancelSel===m});}));
+  var txt=h('input',{placeholder:'Escreve o motivo',maxlength:'150',value:S.cancelTxt,hidden:S.cancelSel!=='Outro motivo',oninput:function(){S.cancelTxt=txt.value;}});
+  return h('div',{class:'item'},h('b',{text:'Porque queres cancelar?'}),
+    h('label',null,'Motivo',sel),txt,
+    act.status==='accepted'?h('p',{class:'small muted',text:'O condutor já aceitou e será avisado do cancelamento.'}):null,
+    h('div',{class:'row'},
+      h('button',{class:'btn danger grow',onclick:async function(){
+        var why=S.cancelSel==='Outro motivo'?S.cancelTxt.trim():S.cancelSel;
+        if(!why){toast(S.cancelSel==='Outro motivo'?'Escreve o motivo do cancelamento.':'Escolhe o motivo do cancelamento.');return;}
+        S.cancelling=false;S.cancelSel='';S.cancelTxt='';
+        rpc('cancel_ride_reason',{p_id:act.id,p_reason:why},'Viagem cancelada.');}},'Confirmar cancelamento'),
+      h('button',{class:'btn ghost',onclick:function(){S.cancelling=false;render();}},'Voltar')));
+}
 function rideView(app){
   var act=activeRide();
   if(act){
@@ -487,7 +507,7 @@ function rideView(app){
       h('p',{class:'small muted',text:Number(act.km).toFixed(1).replace('.',',')+' km · cerca de '+Math.round(act.minutes)+' min'}),
       act.driver_id?h('p',null,'Condutor: ',h('b',{text:act.driver_name||''}),act.driver_phone?h('span',null,' · ',h('a',{href:'tel:'+act.driver_phone,text:act.driver_phone})):null):
         h('p',{class:'muted',text:'À espera que um condutor aceite…'}),
-      ['requested','accepted'].indexOf(act.status)>-1?h('button',{class:'btn danger',onclick:function(){rpc('cancel_ride',{p_id:act.id},'Viagem cancelada.');}},'Cancelar viagem'):null));
+      ['requested','accepted'].indexOf(act.status)>-1?(S.cancelling?cancelForm(act):h('button',{class:'btn danger',onclick:function(){S.cancelling=true;render();}},'Cancelar viagem')):null));
     if(act.driver_id&&['accepted','ongoing'].indexOf(act.status)>-1){app.append(rideChatCard(act,'pax'));app.append(pushCard('pax'));}
   }else{
     S.pick=null;
@@ -518,7 +538,7 @@ function historyCard(){
   if(!mine.length)c.append(h('div',{class:'empty',text:'Ainda não fizeste viagens.'}));
   else c.append(h('div',{class:'list'},mine.map(function(r){
     return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
-      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+eur(r.price)}));})));
+      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+eur(r.price)}),reasonLine(r));})));
   return c;
 }
 async function requestRide(){
@@ -577,7 +597,7 @@ function driveView(app){
   var done=mine.filter(function(r){return ['completed','cancelled'].indexOf(r.status)>-1;}).slice(0,10);
   if(done.length)app.append(h('div',{class:'card'},h('h2',{text:'Últimas viagens'}),h('div',{class:'list'},done.map(function(r){
     return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
-      h('div',{class:'small muted',text:fmtDate(r.updated_at)}),r.status==='completed'?split(r):null);}))));
+      h('div',{class:'small muted',text:fmtDate(r.updated_at)}),reasonLine(r),r.status==='completed'?split(r):null);}))));
 }
 async function toggleOnline(){
   var r=await sb.from('profiles').update({is_online:!S.profile.is_online}).eq('id',S.user.id).select().single();
@@ -764,7 +784,7 @@ function adminView(app){
     h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Viagens concluídas'}),h('b',{text:String(done.length)})),
       h('div',null,h('div',{class:'small muted',text:'Faturado'}),h('b',{text:eur(total)})),h('div',null,h('div',{class:'small muted',text:'Comissão Ubeer'}),h('b',{text:eur(comm)}))),
     h('div',{class:'list'},all.map(function(r){return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
-      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+r.passenger_name+(r.driver_name?' · '+r.driver_name:'')}),split(r),
+      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+r.passenger_name+(r.driver_name?' · '+r.driver_name:'')}),reasonLine(r),split(r),
       h('div',{class:'row'},h('button',{class:'btn danger sm',onclick:async function(){
         var msg='Apagar esta viagem ('+r.from_name+' → '+r.to_name+', '+eur(r.price)+')?'+(r.status==='completed'?' Vai também sair das contas correntes.':'')+' Não dá para desfazer.';
         if(!confirm(msg))return;
