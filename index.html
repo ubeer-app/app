@@ -401,7 +401,32 @@ function suggestInput(label,key){
   });
   inp.addEventListener('blur',function(){ul.hidden=true;
     if(!S[key]&&inp.value){var q=norm(inp.value),p=S.places.filter(function(x){return norm(x.name)===q;})[0];if(p){S[key]={name:p.name,lat:p.lat,lon:p.lon};onPoints();}}});
-  return h('label',null,label,h('div',{class:'sugg'},inp,ul));
+  var field=h('label',null,label,h('div',{class:'sugg'},inp,ul));
+  if(key!=='from')return field;
+  var gbtn=h('button',{class:'btn ghost sm',type:'button',onclick:function(){
+    if(!navigator.geolocation){toast('Este telemóvel não permite obter a localização.');return;}
+    gbtn.disabled=true;gbtn.textContent='A obter localização…';
+    function done(){gbtn.disabled=false;gbtn.textContent='Usar a minha localização atual';}
+    navigator.geolocation.getCurrentPosition(async function(pos){
+      var lat=pos.coords.latitude,lon=pos.coords.longitude,acc=Math.round(pos.coords.accuracy||0);
+      if(!inArea({lat:lat,lon:lon})){done();toast('Estás fora da zona onde a Ubeer funciona.');return;}
+      var nm='A minha localização';
+      try{
+        var r=await fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&accept-language=pt&lat='+lat+'&lon='+lon);
+        var d=await r.json(),a=d.address||{};
+        var rua=a.road?(a.road+(a.house_number?' '+a.house_number:'')):'';
+        var loc=a.village||a.hamlet||a.suburb||a.town||a.city||'';
+        var t=[rua,loc].filter(Boolean).join(', ');
+        if(t)nm='A minha localização ('+t+')';
+      }catch(e){}
+      done();pick({name:nm,lat:lat,lon:lon});
+      toast(acc>150?'Localização obtida, mas pouco precisa (±'+acc+' m). Confirma no mapa.':'Localização obtida (±'+acc+' m).');
+    },function(err){
+      done();
+      toast(err.code===1?'Sem permissão para a localização. Ativa-a nas definições do browser para este site.':err.code===3?'Demorou demasiado. Tenta outra vez, de preferência ao ar livre.':'Não foi possível obter a localização.');
+    },{enableHighAccuracy:true,timeout:15000,maximumAge:0});
+  }},'Usar a minha localização atual');
+  return h('div',{style:'display:flex;flex-direction:column;gap:8px'},field,gbtn);
 }
 var routeSeq=0;
 async function onPoints(clearOnly){
