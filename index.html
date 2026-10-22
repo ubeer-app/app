@@ -88,7 +88,7 @@ async function pushState(){
 async function ensurePush(){
   /* reativa sozinho os avisos se a permissão já foi dada (ex.: depois de sair e entrar) */
   try{
-    if(!S.user||!S.profile||!(S.profile.role==='driver'||S.profile.can_drive))return;
+    if(!S.user||!S.profile)return;
     if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window))return;
     if(Notification.permission!=='granted')return;
     var reg=await navigator.serviceWorker.register('sw.js');await navigator.serviceWorker.ready;
@@ -122,14 +122,15 @@ async function disablePush(){
     if(sub){await sb.from('push_subscriptions').delete().eq('endpoint',sub.endpoint);await sub.unsubscribe();}
     toast('Avisos desativados neste telemóvel.');render();}catch(e){toast(errMsg(e));}
 }
-function pushCard(){
-  var body=h('div',{class:'col'}),c=h('div',{class:'card'},h('h2',{text:'Avisos de novos pedidos'}),body);
+function pushCard(mode){
+  var pax=mode==='pax';
+  var body=h('div',{class:'col'}),c=h('div',{class:'card'},h('h2',{text:pax?'Avisos de mensagens do condutor':'Avisos de novos pedidos'}),body);
   pushState().then(function(st){
     body.textContent='';
     var say=function(t){body.append(h('p',{class:'small muted',text:t}));};
-    if(st==='on'){say('Ativos neste telemóvel. Recebes um aviso a cada pedido novo enquanto estiveres online.');
+    if(st==='on'){say(pax?'Ativos neste telemóvel. Recebes um aviso quando o condutor te escrever.':'Ativos neste telemóvel. Recebes um aviso a cada pedido novo enquanto estiveres online.');
       body.append(h('div',{class:'row'},h('button',{class:'btn ghost sm',onclick:testPush},'Testar neste telemóvel'),h('button',{class:'btn ghost sm',onclick:disablePush},'Desativar')));}
-    else if(st==='off'){say('Ativa para o telemóvel tocar quando entrar um pedido, mesmo com a app fechada. Só recebes avisos enquanto estiveres online.');
+    else if(st==='off'){say(pax?'Ativa para o telemóvel avisar quando o condutor te escrever, mesmo com a app fechada.':'Ativa para o telemóvel tocar quando entrar um pedido, mesmo com a app fechada. Só recebes avisos enquanto estiveres online.');
       body.append(h('button',{class:'btn',onclick:enablePush},'Ativar avisos'));}
     else if(st==='denied')say('As notificações estão bloqueadas para este site. Desbloqueia nas definições do browser (cadeado junto ao endereço) e volta aqui.');
     else if(st==='ios-install')say('No iPhone, primeiro adiciona a Ubeer ao ecrã principal: botão Partilhar → Adicionar ao ecrã principal. Depois abre a Ubeer a partir desse ícone e ativa os avisos aqui.');
@@ -142,7 +143,7 @@ function pushCard(){
 var BOX={latMin:39.98,latMax:40.36,lonMin:-8.95,lonMax:-8.55};
 function inArea(p){return p.lat>=BOX.latMin&&p.lat<=BOX.latMax&&p.lon>=BOX.lonMin&&p.lon<=BOX.lonMax;}
 
-var S={user:null,profile:null,tariffs:null,places:[],rides:[],tab:'ride',cat:'eco',from:null,to:null,route:null,map:null,layer:null,users:[],ledger:[],payments:[],onlineCount:0,busy:false,chat:[],chatSeen:0};
+var S={user:null,profile:null,tariffs:null,places:[],rides:[],tab:'ride',cat:'eco',from:null,to:null,route:null,map:null,layer:null,users:[],ledger:[],payments:[],onlineCount:0,busy:false,chat:[],chatSeen:0,rmsgs:[],rmsgRide:null};
 
 function $(s,r){return (r||document).querySelector(s);}
 function h(tag,attrs){
@@ -200,7 +201,8 @@ async function loadRides(){
   if(r.error)return;
   var sig=JSON.stringify((r.data||[]).map(function(x){return [x.id,x.status,x.driver_id];}));
   var changed=sig!==S.sig;S.sig=sig;S.rides=r.data||[];
-  if(changed)await loadLedger();
+  if(changed){await loadLedger();}
+  loadRideChat();
   var a=document.activeElement;
   if(changed&&!(a&&/INPUT|SELECT/.test(a.tagName)&&$('#app').contains(a)))render();
 }
@@ -218,7 +220,8 @@ function subscribe(){
   if(chan)sb.removeChannel(chan);
   chan=sb.channel('rides').on('postgres_changes',{event:'*',schema:'public',table:'rides'},function(){loadRides();})
     .on('postgres_changes',{event:'*',schema:'public',table:'profiles'},function(){refreshOnline();})
-    .on('postgres_changes',{event:'*',schema:'public',table:'driver_messages'},function(){loadChat();}).subscribe();
+    .on('postgres_changes',{event:'*',schema:'public',table:'driver_messages'},function(){loadChat();})
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'ride_messages'},function(){loadRideChat();}).subscribe();
 }
 async function refreshOnline(){
   if(!S.profile||S.profile.role!=='admin')return;
@@ -251,7 +254,7 @@ function updateTabBadge(){
   var b=document.getElementById('chatTab');if(!b)return;
   var n=unreadChat();b.textContent=n?'Chat ('+n+')':'Chat';
 }
-setInterval(function(){if(S.user&&!document.hidden){loadRides();loadChat();refreshOnline();}},20000);
+setInterval(function(){if(S.user&&!document.hidden){loadRides();loadChat();refreshOnline();loadRideChat();}},20000);
 
 /* ---------- autenticação ---------- */
 async function boot(){
@@ -259,7 +262,7 @@ async function boot(){
   var s=(await sb.auth.getSession()).data.session;
   sb.auth.onAuthStateChange(function(ev,session){
     if(ev==='PASSWORD_RECOVERY'){RECOVERY=true;render();}
-    if(ev==='SIGNED_OUT'){S.user=null;S.profile=null;S.rides=[];S.chat=[];render();}
+    if(ev==='SIGNED_OUT'){S.user=null;S.profile=null;S.rides=[];S.chat=[];S.rmsgs=[];render();}
   });
   if(RECOVERY){render();return;}
   if(s){S.user=s.user;await afterLogin();}else render();
@@ -485,6 +488,7 @@ function rideView(app){
       act.driver_id?h('p',null,'Condutor: ',h('b',{text:act.driver_name||''}),act.driver_phone?h('span',null,' · ',h('a',{href:'tel:'+act.driver_phone,text:act.driver_phone})):null):
         h('p',{class:'muted',text:'À espera que um condutor aceite…'}),
       ['requested','accepted'].indexOf(act.status)>-1?h('button',{class:'btn danger',onclick:function(){rpc('cancel_ride',{p_id:act.id},'Viagem cancelada.');}},'Cancelar viagem'):null));
+    if(act.driver_id&&['accepted','ongoing'].indexOf(act.status)>-1){app.append(rideChatCard(act,'pax'));app.append(pushCard('pax'));}
   }else{
     S.pick=null;
     var mapEl=h('div',{id:'map'}),est=h('div',{id:'est'});
@@ -558,6 +562,7 @@ function driveView(app){
       h('div',{class:'row'},navLinks(act),
         h('button',{class:'btn grow',onclick:function(){rpc('advance_ride',{p_id:act.id});}},act.status==='accepted'?'Iniciar viagem':'Concluir viagem'),
         act.status==='accepted'?h('button',{class:'btn ghost',onclick:function(){rpc('drop_ride',{p_id:act.id},'Viagem devolvida.');}},'Largar'):null)));
+    app.append(rideChatCard(act,'driver'));
   }else if(p.is_online){
     var open=S.rides.filter(function(r){return r.status==='requested';});
     var c=h('div',{class:'card'},h('h2',{text:'Pedidos disponíveis'}));
@@ -578,6 +583,63 @@ async function toggleOnline(){
   var r=await sb.from('profiles').update({is_online:!S.profile.is_online}).eq('id',S.user.id).select().single();
   if(r.error)toast(errMsg(r.error));else{S.profile=r.data;}
   await loadPublic();render();
+}
+
+/* --- chat da viagem (cliente <-> condutor) --- */
+function chatRide(){
+  if(!S.user)return null;
+  return S.rides.filter(function(r){return r.driver_id&&['accepted','ongoing'].indexOf(r.status)>-1&&(r.passenger_id===S.user.id||r.driver_id===S.user.id);})[0]||null;
+}
+var rcList=null;
+async function loadRideChat(){
+  var r=chatRide();
+  if(!r){S.rmsgs=[];S.rmsgRide=null;return;}
+  var q=await sb.from('ride_messages').select('*').eq('ride_id',r.id).order('created_at');
+  if(q.error)return;
+  var before=S.rmsgs.length?S.rmsgs[S.rmsgs.length-1].id:0;
+  S.rmsgs=q.data||[];S.rmsgRide=r.id;
+  var after=S.rmsgs.length?S.rmsgs[S.rmsgs.length-1].id:0;
+  if(before!==after){
+    var last=S.rmsgs[S.rmsgs.length-1];
+    if(rcList&&document.body.contains(rcList))drawRideChat();
+    else if(last&&last.user_id!==S.user.id)toast('Nova mensagem na viagem.');
+  }
+}
+function drawRideChat(){
+  if(!rcList||!document.body.contains(rcList))return;
+  rcList.textContent='';
+  if(!S.rmsgs.length)rcList.append(h('p',{class:'small muted',text:'Ainda sem mensagens. Combina aqui o ponto de encontro.'}));
+  S.rmsgs.forEach(function(m){
+    var mine=m.user_id===S.user.id;
+    rcList.append(h('div',{style:'display:flex;flex-direction:column;align-items:'+(mine?'flex-end':'flex-start')},
+      h('div',{style:'max-width:85%;padding:8px 12px;border-radius:14px;background:'+(mine?'var(--accent)':'var(--line)')+';color:'+(mine?'var(--accent-fg)':'inherit')+';word-break:break-word;white-space:pre-wrap',text:m.body}),
+      h('div',{class:'small muted',text:new Date(m.created_at).toLocaleTimeString('pt-PT',{hour:'2-digit',minute:'2-digit'})})));
+  });
+  rcList.scrollTop=rcList.scrollHeight;
+}
+async function sendRideMsg(rideId,text){
+  var t=String(text||'').trim();if(!t)return false;
+  var r=await sb.from('ride_messages').insert({ride_id:rideId,body:t});
+  if(r.error){toast(errMsg(r.error));return false;}
+  await loadRideChat();return true;
+}
+function rideChatCard(ride,who){
+  rcList=h('div',{style:'display:flex;flex-direction:column;gap:8px;max-height:40vh;overflow-y:auto;padding:2px'});
+  var inp=h('input',{placeholder:'Escreve uma mensagem…',maxlength:'300',autocomplete:'off'});
+  async function go(txt){
+    var v=txt!=null?txt:inp.value;
+    inp.disabled=true;var ok=await sendRideMsg(ride.id,v);inp.disabled=false;
+    if(ok){if(txt==null)inp.value='';drawRideChat();}
+    if(txt==null)inp.focus();
+  }
+  inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();go();}});
+  var quick=(who==='driver'?['Cheguei ao local','Estou a 5 minutos','Onde estás?']:['Estou à porta','Já vou ter consigo','Onde está?']).map(function(t){
+    return h('button',{class:'btn ghost sm',type:'button',onclick:function(){go(t);}},t);});
+  var c=h('div',{class:'card'},h('h2',{text:who==='driver'?'Chat com o passageiro':'Chat com o condutor'}),rcList,
+    h('div',{style:'display:flex;gap:6px;flex-wrap:wrap'},quick),
+    h('div',{style:'display:flex;gap:8px'},h('div',{style:'flex:1'},inp),h('button',{class:'btn',onclick:function(){go();}},'Enviar')));
+  setTimeout(drawRideChat,0);
+  return c;
 }
 
 /* --- chat dos condutores --- */
