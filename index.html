@@ -143,7 +143,7 @@ function pushCard(mode){
 var BOX={latMin:39.98,latMax:40.36,lonMin:-8.95,lonMax:-8.55};
 function inArea(p){return p.lat>=BOX.latMin&&p.lat<=BOX.latMax&&p.lon>=BOX.lonMin&&p.lon<=BOX.lonMax;}
 
-var S={user:null,profile:null,tariffs:null,places:[],rides:[],tab:'ride',cat:'eco',from:null,to:null,route:null,map:null,layer:null,users:[],ledger:[],payments:[],onlineCount:0,busy:false,chat:[],chatSeen:0,rmsgs:[],rmsgRide:null,cancelling:false,cancelSel:'',cancelTxt:''};
+var S={user:null,profile:null,tariffs:null,places:[],rides:[],tab:'ride',cat:'eco',from:null,to:null,route:null,map:null,layer:null,users:[],ledger:[],payments:[],onlineCount:0,busy:false,chat:[],chatSeen:0,rmsgs:[],rmsgRide:null,cancelling:false,cancelSel:'',cancelTxt:'',offer:null,offerEdited:false};
 
 function $(s,r){return (r||document).querySelector(s);}
 function h(tag,attrs){
@@ -447,7 +447,7 @@ function suggestInput(label,key){
 }
 var routeSeq=0;
 async function onPoints(clearOnly){
-  S.route=null;
+  S.route=null;S.offer=null;S.offerEdited=false;
   if(clearOnly!==true&&S.from&&S.to){
     var seq=++routeSeq,est=estimate(S.from,S.to);S.route=est;
     updateEstimate();drawMap();
@@ -469,8 +469,34 @@ function updateEstimate(){var box=$('#est');if(!box)return;box.textContent='';
     act.length>1?h('div',{class:'cats'},act.map(function(k){
       return h('button',{type:'button',class:'cat','aria-pressed':S.cat===k?'true':'false',onclick:function(){S.cat=k;updateEstimate();}},
         h('b',{text:cats[k].label}),h('span',{class:'small muted',text:cats[k].note}),h('div',{class:'price',text:eur(fare(km,mn,k))}));})):
-      h('div',{class:'item'},h('div',{class:'small muted',text:'Preço da viagem'}),h('div',{class:'price',text:eur(fare(km,mn,act[0]))})),
-    h('button',{class:'btn',id:'btnReq',onclick:requestRide},'Pedir viagem · '+eur(fare(km,mn,S.cat))));
+      null,
+    offerBox(fare(km,mn,S.cat)),
+    h('button',{class:'btn',id:'btnReq',onclick:requestRide},'Pedir viagem · '+eur(S.offer!=null?S.offer:fare(km,mn,S.cat))));
+}
+function offerBounds(sug){return {min:Math.round(sug*0.7*100)/100,max:Math.round(sug*2*100)/100};}
+function offerBox(sug){
+  var b=offerBounds(sug);
+  if(S.offer==null||!S.offerEdited||S.offer<b.min||S.offer>b.max){S.offer=sug;S.offerEdited=false;}
+  var inp=h('input',{type:'number',inputmode:'decimal',step:'0.1',min:String(b.min),max:String(b.max),value:S.offer.toFixed(2),style:'text-align:center;font-weight:700'});
+  var hint=h('div',{class:'small muted'});
+  function sync(){
+    var v=parseFloat(String(inp.value).replace(',','.'));
+    var ok=!isNaN(v)&&v>=b.min&&v<=b.max;
+    if(ok){S.offer=Math.round(v*100)/100;S.offerEdited=Math.abs(S.offer-sug)>=0.005;}
+    hint.style.color=ok?'':'var(--bad)';
+    hint.textContent=ok?(Math.abs(S.offer-sug)<0.005?'Podes propor outro valor. O condutor decide se aceita.':(S.offer<sug?'Oferta abaixo do preço sugerido: pode demorar mais a ser aceite.':'Oferta acima do preço sugerido: é mais provável ser aceite depressa.')):'A oferta tem de ficar entre '+eur(b.min)+' e '+eur(b.max)+'.';
+    var br=document.getElementById('btnReq');
+    if(br){br.disabled=!ok;br.textContent='Pedir viagem · '+eur(ok?S.offer:sug);}
+  }
+  function bump(d){var v=parseFloat(String(inp.value).replace(',','.'));if(isNaN(v))v=S.offer;v=Math.min(b.max,Math.max(b.min,Math.round((v+d)*100)/100));inp.value=v.toFixed(2);sync();}
+  inp.addEventListener('input',sync);
+  setTimeout(sync,0);
+  return h('div',{class:'item'},
+    h('div',{class:'row'},h('div',{class:'grow'},h('div',{class:'small muted',text:'Preço sugerido'}),h('b',{text:eur(sug)})),
+      h('button',{type:'button',class:'btn ghost sm',onclick:function(){inp.value=sug.toFixed(2);sync();}},'Usar o sugerido')),
+    h('label',null,'A tua oferta (€)',
+      h('div',{style:'display:flex;gap:8px'},h('button',{type:'button',class:'btn ghost',onclick:function(){bump(-0.5);}},'− 0,50'),inp,h('button',{type:'button',class:'btn ghost',onclick:function(){bump(0.5);}},'+ 0,50'))),
+    hint);
 }
 function drawMap(){
   if(!S.map)return;if(S.layer)S.layer.remove();S.layer=L.layerGroup().addTo(S.map);var pts=[];
@@ -486,6 +512,14 @@ function navLinks(r){
   return h('a',{class:'btn ghost sm',target:'_blank',rel:'noopener',href:'https://www.google.com/maps/dir/?api=1&destination='+q+'&travelmode=driving',text:'Abrir no Google Maps'});
 }
 var CANCEL_REASONS=['Demora demasiado','Mudei de ideias','Enganei-me na origem ou no destino','Encontrei outro transporte','Já não preciso','Outro motivo'];
+function offerLine(r){
+  if(r.suggested_price==null)return null;
+  var d=Number(r.price)-Number(r.suggested_price);
+  if(Math.abs(d)<0.005)return null;
+  var pct=Math.round(d/Number(r.suggested_price)*100);
+  return h('div',{class:'small',style:'font-weight:700;color:'+(d<0?'var(--warn)':'var(--ok)'),
+    text:'Oferta do cliente: '+eur(r.price)+' (sugerido '+eur(r.suggested_price)+', '+(pct>0?'+':'')+pct+'%)'});
+}
 function reasonLine(r){
   return r.status==='cancelled'&&r.cancel_reason?h('div',{class:'small',style:'color:var(--bad)',text:'Motivo do cancelamento: '+r.cancel_reason}):null;
 }
@@ -505,12 +539,22 @@ function cancelForm(act){
         rpc('cancel_ride_reason',{p_id:act.id,p_reason:why},'Viagem cancelada.');}},'Confirmar cancelamento'),
       h('button',{class:'btn ghost',onclick:function(){S.cancelling=false;render();}},'Voltar')));
 }
+function changeOffer(act){
+  var b=offerBounds(Number(act.suggested_price));
+  var inp=h('input',{type:'number',inputmode:'decimal',step:'0.1',min:String(b.min),max:String(b.max),value:Number(act.price).toFixed(2),style:'text-align:center;font-weight:700'});
+  return h('div',{class:'item'},h('div',{class:'small muted',text:'Ninguém aceitou ainda? Podes mudar a oferta ('+eur(b.min)+' a '+eur(b.max)+'):'}),
+    h('div',{style:'display:flex;gap:8px'},inp,h('button',{class:'btn',onclick:function(){
+      var v=parseFloat(String(inp.value).replace(',','.'));
+      if(isNaN(v)||v<b.min||v>b.max){toast('A oferta tem de ficar entre '+eur(b.min)+' e '+eur(b.max)+'.');return;}
+      rpc('update_offer',{p_id:act.id,p_offer:v},'Oferta atualizada.');}},'Atualizar')));
+}
 function rideView(app){
   var act=activeRide();
   if(act){
     app.append(h('div',{class:'card'},h('div',{class:'row'},h('h2',{class:'grow',text:'A tua viagem'}),pill(act.status)),
       h('div',null,h('b',{text:act.from_name}),h('span',{class:'muted',text:'  →  '}),h('b',{text:act.to_name})),
-      h('div',{class:'price',text:eur(act.price)}),
+      h('div',{class:'price',text:eur(act.price)}),offerLine(act),
+      act.status==='requested'&&act.suggested_price!=null?changeOffer(act):null,
       h('p',{class:'small muted',text:Number(act.km).toFixed(1).replace('.',',')+' km · cerca de '+Math.round(act.minutes)+' min'}),
       act.driver_id?h('p',null,'Condutor: ',h('b',{text:act.driver_name||''}),act.driver_phone?h('span',null,' · ',h('a',{href:'tel:'+act.driver_phone,text:act.driver_phone})):null):
         h('p',{class:'muted',text:'À espera que um condutor aceite…'}),
@@ -552,11 +596,13 @@ async function requestRide(){
   if(S.busy||!S.from||!S.to||!S.route)return;
   if(!inArea(S.from)||!inArea(S.to)){toast('Só servimos a zona da Figueira da Foz e Montemor-o-Velho.');return;}
   S.busy=true;
-  var r=await sb.rpc('request_ride',{p_from_name:S.from.name,p_from_lat:S.from.lat,p_from_lon:S.from.lon,p_to_name:S.to.name,p_to_lat:S.to.lat,p_to_lon:S.to.lon,
-    p_km:Math.round(S.route.km*10)/10,p_minutes:Math.round(S.route.min),p_category:S.cat});
+  var km=Math.round(S.route.km*10)/10,mn=Math.round(S.route.min),sug=fare(km,mn,S.cat);
+  var offer=(S.offer!=null&&Math.abs(S.offer-sug)>=0.005)?S.offer:null;
+  var r=await sb.rpc('request_ride_offer',{p_from_name:S.from.name,p_from_lat:S.from.lat,p_from_lon:S.from.lon,p_to_name:S.to.name,p_to_lat:S.to.lat,p_to_lon:S.to.lon,
+    p_km:km,p_minutes:mn,p_category:S.cat,p_offer:offer});
   S.busy=false;
   if(r.error){toast(errMsg(r.error));return;}
-  S.from=S.to=S.route=null;S.map=null;toast('Pedido enviado.');await loadRides();
+  S.from=S.to=S.route=null;S.offer=null;S.map=null;toast('Pedido enviado.');await loadRides();
 }
 async function rpc(fn,args,okMsg){
   if(S.busy)return;S.busy=true;var r=await sb.rpc(fn,args);S.busy=false;
@@ -597,7 +643,7 @@ function driveView(app){
     else c.append(h('div',{class:'list'},open.map(function(r){
       return h('div',{class:'item'},h('b',{text:r.from_name+' → '+r.to_name}),
         h('div',{class:'small muted',text:Number(r.km).toFixed(1).replace('.',',')+' km · '+Math.round(r.minutes)+' min · '+fmtDate(r.created_at)}),
-        split(r),
+        offerLine(r),split(r),
         h('button',{class:'btn',onclick:function(){rpc('accept_ride',{p_id:r.id},'Viagem aceite.');}},'Aceitar'));})));
     app.append(c);
   }else app.append(h('div',{class:'card'},h('div',{class:'empty',text:'Fica online para receber pedidos.'})));
