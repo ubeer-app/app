@@ -185,6 +185,11 @@ function estimate(a,b){var d=hav(a,b),f=d<10?1.3:d<30?1.2:1.25;var km=d*f;
   var urban=Math.min(km,8),mins=urban/(S.tariffs?S.tariffs.speed_kmh:28)*60+(km-urban)/70*60;return {km:km,min:Math.max(3,mins),geo:null};}
 
 /* ---------- tarifa (igual à do servidor) ---------- */
+function activeCats(){
+  var c=(S.tariffs&&S.tariffs.categories)||{};
+  var k=Object.keys(c).filter(function(x){return c[x].enabled!==false;});
+  return k.length?k:Object.keys(c);
+}
 function fare(km,min,catKey){var t=S.tariffs;if(!t)return null;var c=t.categories[catKey];
   var f=Math.max(c.base+km*c.perKm+min*c.perMin,c.minFare);return Math.round((f*t.surge+Number(t.booking_fee))*100)/100;}
 
@@ -458,11 +463,13 @@ async function onPoints(clearOnly){
 function updateEstimate(){var box=$('#est');if(!box)return;box.textContent='';
   if(!S.route){box.append(h('p',{class:'muted small',text:'Escolhe origem e destino para ver o preço.'}));return;}
   var r=S.route,km=Math.round(r.km*10)/10,mn=Math.round(r.min);
-  var cats=S.tariffs.categories;
+  var cats=S.tariffs.categories,act=activeCats();
+  if(act.indexOf(S.cat)<0)S.cat=act[0];
   box.append(h('p',{class:'small muted',text:km.toString().replace('.',',')+' km · cerca de '+mn+' min'+(r.real?'':' (estimativa)')}),
-    h('div',{class:'cats'},Object.keys(cats).map(function(k){
+    act.length>1?h('div',{class:'cats'},act.map(function(k){
       return h('button',{type:'button',class:'cat','aria-pressed':S.cat===k?'true':'false',onclick:function(){S.cat=k;updateEstimate();}},
-        h('b',{text:cats[k].label}),h('span',{class:'small muted',text:cats[k].note}),h('div',{class:'price',text:eur(fare(km,mn,k))}));})),
+        h('b',{text:cats[k].label}),h('span',{class:'small muted',text:cats[k].note}),h('div',{class:'price',text:eur(fare(km,mn,k))}));})):
+      h('div',{class:'item'},h('div',{class:'small muted',text:'Preço da viagem'}),h('div',{class:'price',text:eur(fare(km,mn,act[0]))})),
     h('button',{class:'btn',id:'btnReq',onclick:requestRide},'Pedir viagem · '+eur(fare(km,mn,S.cat))));
 }
 function drawMap(){
@@ -718,11 +725,13 @@ function adminView(app){
   var tf=h('div',{class:'card'},h('h2',{text:'Tarifas'}),
     h('div',{class:'grid2'},h('label',null,'Multiplicador (procura)',num('surge',t.surge,'0.05')),h('label',null,'Taxa de reserva (€)',num('fee',t.booking_fee)),
       h('label',null,'Comissão Ubeer (%)',num('comm',t.commission_pct,'1')),h('label',null,'Velocidade urbana (km/h)',num('speed',t.speed_kmh,'1'))),
-    catKeys.map(function(k){var c=t.categories[k];return h('div',{class:'item'},h('b',{text:c.label}),
+    catKeys.map(function(k){var c=t.categories[k];f[k+'.on']=h('input',{type:'checkbox',style:'width:auto',checked:c.enabled!==false});return h('div',{class:'item'},h('b',{text:c.label}),
+      h('label',{style:'flex-direction:row;align-items:center;gap:8px'},f[k+'.on'],'Disponível para os clientes'),
       h('div',{class:'grid2'},h('label',null,'Base (€)',num(k+'.base',c.base)),h('label',null,'€ / km',num(k+'.perKm',c.perKm)),
         h('label',null,'€ / min',num(k+'.perMin',c.perMin)),h('label',null,'Mínimo (€)',num(k+'.minFare',c.minFare))));}),
     h('button',{class:'btn',onclick:async function(){
-      var cats={};catKeys.forEach(function(k){var c=t.categories[k];cats[k]={label:c.label,note:c.note,base:+f[k+'.base'].value,perKm:+f[k+'.perKm'].value,perMin:+f[k+'.perMin'].value,minFare:+f[k+'.minFare'].value};});
+      var cats={};catKeys.forEach(function(k){var c=t.categories[k];cats[k]={enabled:f[k+'.on'].checked,label:c.label,note:c.note,base:+f[k+'.base'].value,perKm:+f[k+'.perKm'].value,perMin:+f[k+'.perMin'].value,minFare:+f[k+'.minFare'].value};});
+      if(!catKeys.some(function(k){return cats[k].enabled;})){toast('Tem de haver pelo menos uma categoria disponível.');return;}
       var surge=+f.surge.value,comm=+f.comm.value,speed=+f.speed.value;
       if(!(surge>=1&&surge<=5)||!(comm>=0&&comm<=50)||!(speed>=5&&speed<=120)){toast('Valores inválidos: multiplicador 1–5, comissão 0–50, velocidade 5–120.');return;}
       var r=await sb.from('tariffs').update({surge:surge,booking_fee:+f.fee.value,commission_pct:comm,speed_kmh:speed,categories:cats}).eq('id',1).select().single();
