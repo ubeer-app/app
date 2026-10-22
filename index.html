@@ -204,7 +204,8 @@ async function loadProfile(){
 async function loadRides(){
   var r=await sb.from('rides').select('*').order('created_at',{ascending:false}).limit(100);
   if(r.error)return;
-  var sig=JSON.stringify((r.data||[]).map(function(x){return [x.id,x.status,x.driver_id];}));
+  if(isDriverUser()){var bi=await sb.from('booking_interests').select('ride_id');if(!bi.error)S.myInt=(bi.data||[]).map(function(x){return x.ride_id;});}
+  var sig=JSON.stringify((r.data||[]).map(function(x){return [x.id,x.status,x.driver_id,x.interested];}))+JSON.stringify(S.myInt);
   var changed=sig!==S.sig;S.sig=sig;S.rides=r.data||[];
   if(changed){await loadLedger();}
   loadRideChat();
@@ -225,6 +226,7 @@ function subscribe(){
   if(chan)sb.removeChannel(chan);
   chan=sb.channel('rides').on('postgres_changes',{event:'*',schema:'public',table:'rides'},function(){loadRides();})
     .on('postgres_changes',{event:'*',schema:'public',table:'profiles'},function(){refreshOnline();})
+    .on('postgres_changes',{event:'*',schema:'public',table:'booking_interests'},function(){loadRides();})
     .on('postgres_changes',{event:'*',schema:'public',table:'driver_messages'},function(){loadChat();})
     .on('postgres_changes',{event:'INSERT',schema:'public',table:'ride_messages'},function(){loadRideChat();}).subscribe();
 }
@@ -618,6 +620,12 @@ function rideView(app){
   var rc=bookingsCard();if(rc)app.append(rc);
   app.append(historyCard());
 }
+function within24(r){return new Date(r.scheduled_from).getTime()-Date.now()<=24*3600*1000;}
+function interestLine(r){
+  var n=r.interested||0;
+  if(!n)return h('p',{class:'small muted',text:'Ainda ninguém marcou disponibilidade provisória.'});
+  return h('p',{class:'small',text:n+(n===1?' condutor possivelmente disponível':' condutores possivelmente disponíveis')+' (sem confirmação). Na véspera pedimos-lhes que confirmem.'});
+}
 function bookingsCard(){
   var mine=S.rides.filter(function(r){return r.passenger_id===S.user.id&&r.scheduled_from&&['requested','accepted'].indexOf(r.status)>-1;})
     .sort(function(a,b){return new Date(a.scheduled_from)-new Date(b.scheduled_from);});
@@ -631,7 +639,7 @@ function bookingsCard(){
       h('div',{class:'price',text:eur(r.price)}),offerLine(r),
       r.status==='accepted'?h('p',null,'Condutor: ',h('b',{text:r.driver_name||''}),r.driver_phone?h('span',null,' · ',h('a',{href:'tel:'+r.driver_phone,text:r.driver_phone})):null,
         h('span',{class:'small muted',text:'  — vai combinar contigo a hora de recolha.'})):
-        (expired?h('p',{class:'small muted',text:'Nenhum condutor aceitou a tempo. Podes cancelar e fazer uma nova reserva.'}):h('p',{class:'small muted',text:'À espera que um condutor aceite. Os condutores foram avisados.'})),
+        (expired?h('p',{class:'small muted',text:'Nenhum condutor aceitou a tempo. Podes cancelar e fazer uma nova reserva.'}):h('div',null,h('p',{class:'small muted',text:'À espera de confirmação. Os condutores foram avisados.'}),interestLine(r))),
       r.status==='requested'&&!expired&&r.suggested_price!=null?changeOffer(r):null,
       S.cancelling===r.id?cancelForm(r):h('button',{class:'btn danger',onclick:function(){S.cancelling=r.id;render();}},'Cancelar reserva'));
   })));
@@ -722,12 +730,16 @@ function driveView(app){
   var openB=S.rides.filter(function(r){return r.status==='requested'&&r.scheduled_from&&new Date(r.scheduled_to).getTime()>=Date.now()&&r.passenger_id!==p.id;})
     .sort(function(a,b){return new Date(a.scheduled_from)-new Date(b.scheduled_from);});
   if(openB.length)app.append(h('div',{class:'card'},h('h2',{text:'Reservas disponíveis'}),
-    h('p',{class:'small muted',text:'Viagens marcadas para mais tarde. Podes aceitar mesmo estando offline.'}),
+    h('p',{class:'small muted',text:'Viagens marcadas para mais tarde. Até 24 h antes podes marcar "Posso fazer" (provisório, sem compromisso); na véspera recebes um aviso para confirmar. Podes mexer mesmo estando offline.'}),
     h('div',{class:'list'},openB.map(function(r){
+      var mineInt=(S.myInt||[]).indexOf(r.id)>-1,soon=within24(r);
       return h('div',{class:'item'},h('b',{text:fmtWindow(r)}),h('b',{text:r.from_name+' → '+r.to_name}),
-        h('div',{class:'small muted',text:Number(r.km).toFixed(1).replace('.',',')+' km · '+Math.round(r.minutes)+' min'}),
+        h('div',{class:'small muted',text:Number(r.km).toFixed(1).replace('.',',')+' km · '+Math.round(r.minutes)+' min · '+(r.interested||0)+' possivelmente disponível(eis)'}),
         offerLine(r),split(r),
-        h('button',{class:'btn',onclick:function(){rpc('accept_ride',{p_id:r.id},'Reserva aceite.');}},'Aceitar reserva'));}))));
+        soon?h('button',{class:'btn',onclick:function(){rpc('accept_ride',{p_id:r.id},'Reserva confirmada.');}},'Confirmar reserva'):null,
+        mineInt?h('button',{class:'btn ghost',onclick:function(){rpc('set_interest',{p_ride:r.id,p_on:false},'Disponibilidade retirada.');}},'Retirar "posso fazer"'):
+          h('button',{class:soon?'btn ghost':'btn',onclick:function(){rpc('set_interest',{p_ride:r.id,p_on:true},'Marcado como possivelmente disponível.');}},'Posso fazer (provisório)'),
+        mineInt&&!soon?h('p',{class:'small muted',text:'Marcado. Recebes um aviso na véspera para confirmar.'}):null);}))));
   var done=mine.filter(function(r){return ['completed','cancelled'].indexOf(r.status)>-1;}).slice(0,10);
   if(done.length)app.append(h('div',{class:'card'},h('h2',{text:'Últimas viagens'}),h('div',{class:'list'},done.map(function(r){
     return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
