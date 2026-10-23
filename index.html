@@ -20,7 +20,7 @@ body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,-app
 header{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .brand{font-weight:800;font-size:1.5rem;letter-spacing:-.02em;color:var(--accent)}
 .brand small{font-weight:500;color:var(--muted);font-size:.8rem;margin-left:6px;letter-spacing:0}
-.fold>summary{cursor:pointer;font-weight:700;font-size:1.1rem;list-style:none;display:flex;align-items:center;gap:8px}.fold>summary::-webkit-details-marker{display:none}.fold>summary::before{content:'▸';transition:transform .15s}.fold[open]>summary::before{transform:rotate(90deg)}.fold>.fbody{display:flex;flex-direction:column;gap:12px;margin-top:12px}
+.fold>summary{cursor:pointer;font-weight:700;font-size:1.1rem;list-style:none;display:flex;align-items:center;gap:8px}.fold>summary::-webkit-details-marker{display:none}.fold>summary::before{content:'▸';transition:transform .15s}.fold[open]>summary::before{transform:rotate(90deg)}.fold.sub{border:1px solid var(--line);border-radius:10px;padding:10px}.fold.sub>summary{font-size:1rem}.fold>.fbody{display:flex;flex-direction:column;gap:12px;margin-top:12px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}
 h2{margin:0;font-size:1.1rem}
 label{display:flex;flex-direction:column;gap:4px;font-size:.88rem;color:var(--muted);min-width:0}
@@ -928,8 +928,7 @@ function adminView(app){
         S.tempPass&&u&&S.tempPass[u.id]?h('div',{class:'small'},'Envia por mensagem: ',h('b',{text:S.tempPass[u.id]})):null,
         h('button',{class:'btn ghost sm',onclick:async function(){await sb.from('password_requests').update({done:true}).eq('id',q.id);await loadUsers();render();}},'Marcar como resolvido'));}))),'pwreq'));
   var drivers=S.users.filter(function(u){return u.role==='driver'||u.can_drive;}).length;
-  var uc=h('div',{class:'card'},h('h2',{text:'Utilizadores'}),h('p',{class:'small muted',text:'Condutores: '+drivers+' de 20. Muda o papel de quem se registou para o tornar condutor, ou marca "também conduz" (por exemplo para ti).'}),
-    h('div',{class:'list'},S.users.map(function(u){
+  function userItem(u){
       var sel=h('select',{onchange:async function(){var r=await sb.from('profiles').update({role:sel.value}).eq('id',u.id);
         if(r.error)toast(errMsg(r.error));else toast('Papel atualizado.');await loadUsers();render();}},
         [['passenger','Passageiro'],['driver','Condutor'],['admin','Administrador']].map(function(o){return h('option',{value:o[0],selected:u.role===o[0],text:o[1]});}));
@@ -941,7 +940,19 @@ function adminView(app){
           h('input',{type:'checkbox',style:'width:auto',checked:u.can_drive,onchange:async function(e){
             var r=await sb.from('profiles').update({can_drive:e.target.checked}).eq('id',u.id);
             if(r.error)toast(errMsg(r.error));else toast('Atualizado.');
-            await loadUsers();if(u.id===S.user.id)await loadProfile();render();}}),'Também conduz'));})));
+            await loadUsers();if(u.id===S.user.id)await loadProfile();render();}}),'Também conduz'));
+  }
+  function subfold(key,title,list){
+    var d=document.createElement('details'),sm=document.createElement('summary');
+    d.className='fold sub';sm.textContent=title+' ('+list.length+')';
+    var body=h('div',{class:'fbody'});
+    if(list.length)list.forEach(function(u){body.append(userItem(u));});else body.append(h('div',{class:'empty',text:'Ninguém por aqui.'}));
+    d.append(sm,body);d.open=!!(S.open&&S.open[key]);
+    d.addEventListener('toggle',function(){S.open=S.open||{};S.open[key]=d.open;});return d;
+  }
+  var staff=S.users.filter(function(u){return u.role==='driver'||u.role==='admin'||u.can_drive;}),pax=S.users.filter(function(u){return !(u.role==='driver'||u.role==='admin'||u.can_drive);});
+  var uc=h('div',{class:'card'},h('h2',{text:'Utilizadores'}),h('p',{class:'small muted',text:'Condutores: '+drivers+' de 20. Muda o papel de quem se registou para o tornar condutor, ou marca "também conduz" (por exemplo para ti).'}),
+    subfold('u_staff','Condutores e gestão',staff),subfold('u_pax','Passageiros',pax));
   app.append(fold(uc,'users'));
 
   var pName=h('input',{placeholder:'Ex.: Largo da Feira Velha'}),pCoord=h('input',{placeholder:'40.1687, -8.7501',inputmode:'decimal'});
