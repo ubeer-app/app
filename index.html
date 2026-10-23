@@ -171,7 +171,9 @@ function split(r){var fee=Number(r.price)-Number(r.driver_earnings);
 function ledgerBox(l){
   return h('div',{class:'grid2'},
     h('div',null,h('div',{class:'small muted',text:'Ganhos (condutor)'}),h('b',{text:eur(l.earned)})),
-    h('div',null,h('div',{class:'small muted',text:'Parte do molhe'}),h('b',{text:eur(l.owed)})),
+    h('div',null,h('div',{class:'small muted',text:'Molhe (obrigatório)'}),h('b',{text:eur(l.owed)})),
+    h('div',null,h('div',{class:'small muted',text:'Cedido ao molhe'}),h('b',{text:eur(l.donated)})),
+    h('div',null,h('div',{class:'small muted',text:'Fica contigo'}),h('b',{text:eur(Number(l.earned)-Number(l.donated))})),
     h('div',null,h('div',{class:'small muted',text:'Já entregue'}),h('b',{text:eur(l.paid)})),
     h('div',null,h('div',{class:'small muted',text:'Falta entregar'}),h('b',{class:'price',style:'color:'+(Number(l.balance)>0.004?'var(--warn)':'var(--ok)'),text:eur(l.balance)})));
 }
@@ -215,8 +217,8 @@ async function loadRides(){
 }
 async function loadLedger(){
   if(!S.profile||(S.profile.role==='passenger'&&!S.profile.can_drive))return;
-  var a=await sb.rpc('driver_ledger'),b=await sb.from('payments').select('*').order('created_at',{ascending:false}).limit(100);
-  S.ledger=a.data||[];S.payments=b.data||[];
+  var a=await sb.rpc('driver_ledger_v2'),b=await sb.from('payments').select('*').order('created_at',{ascending:false}).limit(100),c=await sb.from('donations').select('*').order('created_at',{ascending:false}).limit(100);
+  S.ledger=a.data||[];S.payments=b.data||[];S.donations=c.data||[];
 }
 async function loadUsers(){
   var r=await sb.from('profiles').select('*').order('created_at');S.users=r.data||[];
@@ -723,12 +725,27 @@ function driveView(app){
     h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Estado'}),h('b',{text:p.is_online?'Online':'Offline'})),
       h('div',null,h('div',{class:'small muted',text:'Ganhos hoje'}),h('b',{text:eur(earned)})))));
   app.append(pushCard());
-  var myL=S.ledger.filter(function(x){return x.driver_id===p.id;})[0]||{earned:0,owed:0,paid:0,balance:0,rides:0};
+  var myL=S.ledger.filter(function(x){return x.driver_id===p.id;})[0]||{earned:0,owed:0,donated:0,paid:0,balance:0,rides:0};
+  var myD=(S.donations||[]).filter(function(x){return x.driver_id===p.id;}).slice(0,8);
+  var dAmt=h('input',{type:'number',step:'0.01',min:'0.01',inputmode:'decimal',placeholder:'0,00'});
   var myP=S.payments.filter(function(x){return x.driver_id===p.id;}).slice(0,8);
   app.append(h('div',{class:'card'},h('h2',{text:'A minha conta corrente'}),
     h('p',{class:'small muted',text:'O cliente paga-te a ti. De cada viagem concluída, a parte do molhe tem de ser entregue. '+myL.rides+' viagem(ns) concluída(s).'}),
     ledgerBox(myL),
-    myP.length?h('div',{class:'list'},myP.map(function(x){return h('div',{class:'row small'},h('span',{class:'grow muted',text:fmtDate(x.created_at)+(x.note?' · '+x.note:'')}),h('b',{text:'− '+eur(x.amount)}));})):null));
+    myP.length?h('div',{class:'list'},myP.map(function(x){return h('div',{class:'row small'},h('span',{class:'grow muted',text:fmtDate(x.created_at)+(x.note?' · '+x.note:'')}),h('b',{text:'− '+eur(x.amount)}));})):null,
+    h('div',{class:'item'},h('b',{text:'Ceder ao molhe'}),
+      h('p',{class:'small muted',text:'Queres dar mais ao molhe? Podes ceder parte do que ganhaste, além da parte obrigatória. Fica registado e soma ao que tens de entregar.'}),
+      h('label',null,'Valor (€)',dAmt),
+      h('button',{class:'btn',onclick:async function(){
+        var v=parseFloat(String(dAmt.value).replace(',','.'));
+        if(!(v>0)){toast('Indica o valor a ceder.');return;}
+        if(!confirm('Ceder '+eur(v)+' ao molhe?'))return;
+        var r=await sb.from('donations').insert({amount:v});
+        if(r.error){toast(errMsg(r.error));return;}
+        toast('Obrigado! '+eur(v)+' cedidos ao molhe.');await loadLedger();render();}},'Ceder ao molhe'),
+      myD.length?h('div',{class:'list'},myD.map(function(x){return h('div',{class:'row small'},h('span',{class:'grow muted',text:fmtDate(x.created_at)+' · cedido'}),h('b',{text:eur(x.amount)}),
+        h('button',{class:'btn danger sm',onclick:async function(){if(!confirm('Anular esta cedência de '+eur(x.amount)+'?'))return;
+          var r=await sb.from('donations').delete().eq('id',x.id);if(r.error)toast(errMsg(r.error));await loadLedger();render();}},'Anular'));})):null)));
   if(act){
     app.append(h('div',{class:'card'},h('div',{class:'row'},h('h2',{class:'grow',text:'Viagem em curso'}),pill(act.status)),
       h('div',null,h('b',{text:act.from_name}),h('span',{class:'muted',text:'  →  '}),h('b',{text:act.to_name})),
@@ -970,10 +987,12 @@ function adminView(app){
 
   var dSel=h('select',null,S.ledger.map(function(l){return h('option',{value:l.driver_id,text:l.name+' · falta '+eur(l.balance)});}));
   var amt=h('input',{type:'number',step:'0.01',min:'0.01',inputmode:'decimal',placeholder:'0,00'}),note=h('input',{placeholder:'Ex.: MBWay, em mão'});
-  var totalFalta=S.ledger.reduce(function(a,l){return a+Number(l.balance);},0),totalPago=S.ledger.reduce(function(a,l){return a+Number(l.paid);},0);
+  var totalCedido=S.ledger.reduce(function(a,l){return a+Number(l.donated);},0),totalOb=S.ledger.reduce(function(a,l){return a+Number(l.owed);},0),totalFalta=S.ledger.reduce(function(a,l){return a+Number(l.balance);},0),totalPago=S.ledger.reduce(function(a,l){return a+Number(l.paid);},0);
   var nameOf={};S.ledger.forEach(function(l){nameOf[l.driver_id]=l.name;});
   app.append(fold(h('div',{class:'card'},h('h2',{text:'Contas correntes dos condutores'}),
-    h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Por entregar ao molhe'}),h('b',{class:'price',text:eur(totalFalta)})),
+    h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Molhe obrigatório (total)'}),h('b',{text:eur(totalOb)})),
+      h('div',null,h('div',{class:'small muted',text:'Cedido pelos condutores'}),h('b',{text:eur(totalCedido)})),
+      h('div',null,h('div',{class:'small muted',text:'Por entregar ao molhe'}),h('b',{class:'price',text:eur(totalFalta)})),
       h('div',null,h('div',{class:'small muted',text:'Já entregue ao molhe'}),h('b',{class:'price',text:eur(totalPago)}))),
     h('div',{class:'list'},S.ledger.length?S.ledger.map(function(l){return h('div',{class:'item'},h('b',{text:l.name+' · '+l.rides+' viagem(ns)'}),ledgerBox(l));}):h('div',{class:'empty',text:'Ainda não há condutores.'})),
     S.ledger.length?h('div',{class:'item'},h('b',{text:'Registar entrega'}),
