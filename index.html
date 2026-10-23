@@ -219,6 +219,7 @@ async function loadLedger(){
 }
 async function loadUsers(){
   var r=await sb.from('profiles').select('*').order('created_at');S.users=r.data||[];
+  var q=await sb.from('password_requests').select('*').eq('done',false).order('created_at',{ascending:false}).limit(20);S.pwreq=q.data||[];
 }
 var chan;
 function isDriverUser(){return !!(S.profile&&(S.profile.role==='driver'||S.profile.can_drive||S.profile.role==='admin'));}
@@ -297,6 +298,19 @@ async function doRegister(name,phone,email,pass){
   if(!r.data.session){toast('Conta criada. Confirma o email que te enviámos e depois entra.');return;}
   S.user=r.data.user;await afterLogin();
 }
+async function makeTempPass(u,q){
+  if(!confirm('Criar uma password temporária para '+(u.name||u.email)+'? A password antiga deixa de funcionar.'))return;
+  var ch='abcdefghjkmnpqrstuvwxyz23456789',pw='';for(var i=0;i<8;i++)pw+=ch[Math.floor(Math.random()*ch.length)];
+  var r=await sb.rpc('admin_set_password',{p_user:u.id,p_pass:pw});
+  if(r.error){toast(errMsg(r.error));return;}
+  S.tempPass=S.tempPass||{};S.tempPass[u.id]=pw;toast('Password temporária criada.');render();
+}
+async function doHelp(email,name,phone){
+  if(!email){toast('Escreve o email da tua conta.');return;}
+  var r=await sb.rpc('request_password_help',{p_email:email,p_name:name,p_phone:phone});
+  if(r.error){toast(r.error.message);return;}
+  authMode='helpsent';render();
+}
 async function doForgot(email){
   if(!email){toast('Escreve o teu email.');return;}
   var r=await sb.auth.resetPasswordForEmail(email,{redirectTo:location.origin+location.pathname});
@@ -363,8 +377,21 @@ function resetView(){
 }
 function authView(){
   if(authMode==='sent')return h('div',{class:'card'},h('h2',{text:'Verifica o email'}),
-    h('p',{class:'muted',text:'Se esse email tiver conta, enviámos-te um link para escolheres uma palavra-passe nova. Vê também o spam. Se não chegar, pede à Vera uma password temporária.'}),
+    h('p',{class:'muted',text:'Se esse email tiver conta, enviámos-te um link para escolheres uma palavra-passe nova. Vê também o spam. '}),
+    h('button',{class:'btn',onclick:function(){authMode='help';render();}},'Não recebi o email'),
     h('button',{class:'btn ghost',onclick:function(){authMode='login';render();}},'Voltar a entrar'));
+  if(authMode==='helpsent')return h('div',{class:'card'},h('h2',{text:'Pedido enviado'}),
+    h('p',{class:'muted',text:'A Vera foi avisada e vai enviar-te uma password temporária por mensagem. Depois de entrares, carrega em "Mudar password".'}),
+    h('button',{class:'btn ghost',onclick:function(){authMode='login';render();}},'Voltar a entrar'));
+  if(authMode==='help'){
+    var he=h('input',{type:'email',autocomplete:'email',required:true}),hn=h('input',{autocomplete:'name'}),hp=h('input',{type:'tel',autocomplete:'tel'});
+    return h('form',{class:'card',onsubmit:function(e){e.preventDefault();doHelp(he.value.trim(),hn.value.trim(),hp.value.trim());}},
+      h('h2',{text:'Pedir password à Vera'}),
+      h('p',{class:'muted',text:'Diz-nos quem és e a Vera envia-te uma password temporária por mensagem.'}),
+      h('label',null,'Email da conta',he),h('label',null,'Nome',hn),h('label',null,'Telemóvel (para receberes a mensagem)',hp),
+      h('button',{class:'btn',type:'submit',text:'Pedir password'}),
+      h('button',{class:'btn ghost',type:'button',onclick:function(){authMode='login';render();}},'Voltar'));
+  }
   if(authMode==='forgot'){
     var fe=h('input',{type:'email',autocomplete:'email',required:true});
     return h('form',{class:'card',onsubmit:function(e){e.preventDefault();doForgot(fe.value.trim());}},
@@ -881,6 +908,15 @@ function adminView(app){
       if(r.error)toast(errMsg(r.error));else{S.tariffs=r.data;toast('Tarifas guardadas.');}}},'Guardar tarifas'));
   app.append(tf);
 
+  if((S.pwreq||[]).length)app.append(h('div',{class:'card'},h('h2',{text:'Pedidos de password'}),
+    h('p',{class:'small muted',text:'Pessoas que não conseguem entrar. Cria uma password temporária e envia-lha por mensagem.'}),
+    h('div',{class:'list'},S.pwreq.map(function(q){
+      var u=S.users.filter(function(x){return (x.email||'').toLowerCase()===q.email;})[0];
+      return h('div',{class:'item'},h('b',{text:(q.name||'')+(q.name?' · ':'')+q.email}),
+        h('div',{class:'small muted',text:(q.phone?q.phone+' · ':'')+fmtDate(q.created_at)}),
+        u?h('button',{class:'btn sm',onclick:function(){makeTempPass(u,q);}},'Criar password temporária'):h('div',{class:'small muted',text:'Não existe conta com este email.'}),
+        S.tempPass&&u&&S.tempPass[u.id]?h('div',{class:'small'},'Envia por mensagem: ',h('b',{text:S.tempPass[u.id]})):null,
+        h('button',{class:'btn ghost sm',onclick:async function(){await sb.from('password_requests').update({done:true}).eq('id',q.id);await loadUsers();render();}},'Marcar como resolvido'));}))));
   var drivers=S.users.filter(function(u){return u.role==='driver'||u.can_drive;}).length;
   var uc=h('div',{class:'card'},h('h2',{text:'Utilizadores'}),h('p',{class:'small muted',text:'Condutores: '+drivers+' de 10. Muda o papel de quem se registou para o tornar condutor, ou marca "também conduz" (por exemplo para ti).'}),
     h('div',{class:'list'},S.users.map(function(u){
@@ -889,12 +925,7 @@ function adminView(app){
         [['passenger','Passageiro'],['driver','Condutor'],['admin','Administrador']].map(function(o){return h('option',{value:o[0],selected:u.role===o[0],text:o[1]});}));
       return h('div',{class:'item'},h('b',{text:u.name||u.email}),h('div',{class:'small muted',text:(u.email||'')+(u.phone?' · '+u.phone:'')}),
         u.id===S.user.id?h('div',{class:'small muted',text:'(tu)'}):sel,
-        u.id===S.user.id?null:h('button',{class:'btn ghost sm',onclick:async function(){
-          if(!confirm('Criar uma password temporária para '+(u.name||u.email)+'? A password antiga deixa de funcionar.'))return;
-          var ch='abcdefghjkmnpqrstuvwxyz23456789',pw='';for(var i=0;i<8;i++)pw+=ch[Math.floor(Math.random()*ch.length)];
-          var r=await sb.rpc('admin_set_password',{p_user:u.id,p_pass:pw});
-          if(r.error){toast(errMsg(r.error));return;}
-          S.tempPass=S.tempPass||{};S.tempPass[u.id]=pw;toast('Password temporária criada.');render();}},'Nova password temporária'),
+        u.id===S.user.id?null:h('button',{class:'btn ghost sm',onclick:function(){makeTempPass(u);}},'Nova password temporária'),
         S.tempPass&&S.tempPass[u.id]?h('div',{class:'small'},'Envia por mensagem: ',h('b',{text:S.tempPass[u.id]}),' (a pessoa deve entrar e depois mudar a password).'):null,
         u.role==='driver'?null:h('label',{style:'flex-direction:row;align-items:center;gap:8px'},
           h('input',{type:'checkbox',style:'width:auto',checked:u.can_drive,onchange:async function(e){
