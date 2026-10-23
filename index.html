@@ -20,6 +20,7 @@ body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,-app
 header{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .brand{font-weight:800;font-size:1.5rem;letter-spacing:-.02em;color:var(--accent)}
 .brand small{font-weight:500;color:var(--muted);font-size:.8rem;margin-left:6px;letter-spacing:0}
+.fold>summary{cursor:pointer;font-weight:700;font-size:1.1rem;list-style:none;display:flex;align-items:center;gap:8px}.fold>summary::-webkit-details-marker{display:none}.fold>summary::before{content:'▸';transition:transform .15s}.fold[open]>summary::before{transform:rotate(90deg)}.fold>.fbody{display:flex;flex-direction:column;gap:12px;margin-top:12px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}
 h2{margin:0;font-size:1.1rem}
 label{display:flex;flex-direction:column;gap:4px;font-size:.88rem;color:var(--muted);min-width:0}
@@ -879,6 +880,15 @@ function chatView(app){
 }
 
 /* --- administração --- */
+function fold(card,key){
+  var t=card.querySelector('h2'),d=document.createElement('details'),sm=document.createElement('summary'),body=h('div',{class:'fbody'});
+  sm.textContent=t.textContent;t.remove();
+  while(card.firstChild)body.append(card.firstChild);
+  d.className='card fold';d.append(sm,body);
+  d.open=!!(S.open&&S.open[key]);
+  d.addEventListener('toggle',function(){S.open=S.open||{};S.open[key]=d.open;});
+  return d;
+}
 function onlineCard(){
   var on=S.users.filter(function(u){return (u.role==='driver'||u.can_drive)&&u.is_online;});
   var off=S.users.filter(function(u){return (u.role==='driver'||u.can_drive)&&!u.is_online;});
@@ -888,7 +898,7 @@ function onlineCard(){
     off.length?h('p',{class:'small muted',text:'Offline: '+off.map(function(u){return u.name||u.email;}).join(', ')}):null);
 }
 function adminView(app){
-  app.append(onlineCard());
+  app.append(fold(onlineCard(),'online'));
   var t=S.tariffs,f={};
   function num(k,v,step){f[k]=h('input',{type:'number',step:step||'0.01',min:'0',value:v});return f[k];}
   var catKeys=Object.keys(t.categories);
@@ -906,9 +916,9 @@ function adminView(app){
       if(!(surge>=1&&surge<=5)||!(comm>=0&&comm<=50)||!(speed>=5&&speed<=120)){toast('Valores inválidos: multiplicador 1–5, comissão 0–50, velocidade 5–120.');return;}
       var r=await sb.from('tariffs').update({surge:surge,booking_fee:+f.fee.value,commission_pct:comm,speed_kmh:speed,categories:cats}).eq('id',1).select().single();
       if(r.error)toast(errMsg(r.error));else{S.tariffs=r.data;toast('Tarifas guardadas.');}}},'Guardar tarifas'));
-  app.append(tf);
+  app.append(fold(tf,'tarifas'));
 
-  if((S.pwreq||[]).length)app.append(h('div',{class:'card'},h('h2',{text:'Pedidos de password'}),
+  if((S.pwreq||[]).length)app.append(fold(h('div',{class:'card'},h('h2',{text:'Pedidos de password ('+S.pwreq.length+')'}),
     h('p',{class:'small muted',text:'Pessoas que não conseguem entrar. Cria uma password temporária e envia-lha por mensagem.'}),
     h('div',{class:'list'},S.pwreq.map(function(q){
       var u=S.users.filter(function(x){return (x.email||'').toLowerCase()===q.email;})[0];
@@ -916,9 +926,9 @@ function adminView(app){
         h('div',{class:'small muted',text:(q.phone?q.phone+' · ':'')+fmtDate(q.created_at)}),
         u?h('button',{class:'btn sm',onclick:function(){makeTempPass(u,q);}},'Criar password temporária'):h('div',{class:'small muted',text:'Não existe conta com este email.'}),
         S.tempPass&&u&&S.tempPass[u.id]?h('div',{class:'small'},'Envia por mensagem: ',h('b',{text:S.tempPass[u.id]})):null,
-        h('button',{class:'btn ghost sm',onclick:async function(){await sb.from('password_requests').update({done:true}).eq('id',q.id);await loadUsers();render();}},'Marcar como resolvido'));}))));
+        h('button',{class:'btn ghost sm',onclick:async function(){await sb.from('password_requests').update({done:true}).eq('id',q.id);await loadUsers();render();}},'Marcar como resolvido'));}))),'pwreq'));
   var drivers=S.users.filter(function(u){return u.role==='driver'||u.can_drive;}).length;
-  var uc=h('div',{class:'card'},h('h2',{text:'Utilizadores'}),h('p',{class:'small muted',text:'Condutores: '+drivers+' de 10. Muda o papel de quem se registou para o tornar condutor, ou marca "também conduz" (por exemplo para ti).'}),
+  var uc=h('div',{class:'card'},h('h2',{text:'Utilizadores'}),h('p',{class:'small muted',text:'Condutores: '+drivers+' de 20. Muda o papel de quem se registou para o tornar condutor, ou marca "também conduz" (por exemplo para ti).'}),
     h('div',{class:'list'},S.users.map(function(u){
       var sel=h('select',{onchange:async function(){var r=await sb.from('profiles').update({role:sel.value}).eq('id',u.id);
         if(r.error)toast(errMsg(r.error));else toast('Papel atualizado.');await loadUsers();render();}},
@@ -932,7 +942,7 @@ function adminView(app){
             var r=await sb.from('profiles').update({can_drive:e.target.checked}).eq('id',u.id);
             if(r.error)toast(errMsg(r.error));else toast('Atualizado.');
             await loadUsers();if(u.id===S.user.id)await loadProfile();render();}}),'Também conduz'));})));
-  app.append(uc);
+  app.append(fold(uc,'users'));
 
   var pName=h('input',{placeholder:'Ex.: Largo da Feira Velha'}),pCoord=h('input',{placeholder:'40.1687, -8.7501',inputmode:'decimal'});
   var pc=h('div',{class:'card'},h('h2',{text:'Localidades'}),
@@ -945,13 +955,13 @@ function adminView(app){
       var r=await sb.from('places').insert(p);if(r.error)toast(errMsg(r.error));else{toast('Localidade adicionada.');await loadPublic();render();}}},'Adicionar'),
     h('div',{class:'list'},S.places.map(function(p){return h('div',{class:'row item'},h('span',{class:'grow',text:p.name}),
       h('button',{class:'btn danger sm',onclick:async function(){var r=await sb.from('places').delete().eq('id',p.id);if(r.error)toast(errMsg(r.error));await loadPublic();render();}},'Remover'));})));
-  app.append(pc);
+  app.append(fold(pc,'places'));
 
   var dSel=h('select',null,S.ledger.map(function(l){return h('option',{value:l.driver_id,text:l.name+' · falta '+eur(l.balance)});}));
   var amt=h('input',{type:'number',step:'0.01',min:'0.01',inputmode:'decimal',placeholder:'0,00'}),note=h('input',{placeholder:'Ex.: MBWay, em mão'});
   var totalFalta=S.ledger.reduce(function(a,l){return a+Number(l.balance);},0),totalPago=S.ledger.reduce(function(a,l){return a+Number(l.paid);},0);
   var nameOf={};S.ledger.forEach(function(l){nameOf[l.driver_id]=l.name;});
-  app.append(h('div',{class:'card'},h('h2',{text:'Contas correntes dos condutores'}),
+  app.append(fold(h('div',{class:'card'},h('h2',{text:'Contas correntes dos condutores'}),
     h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Por entregar ao molhe'}),h('b',{class:'price',text:eur(totalFalta)})),
       h('div',null,h('div',{class:'small muted',text:'Já entregue ao molhe'}),h('b',{class:'price',text:eur(totalPago)}))),
     h('div',{class:'list'},S.ledger.length?S.ledger.map(function(l){return h('div',{class:'item'},h('b',{text:l.name+' · '+l.rides+' viagem(ns)'}),ledgerBox(l));}):h('div',{class:'empty',text:'Ainda não há condutores.'})),
@@ -966,11 +976,11 @@ function adminView(app){
     S.payments.length?h('div',null,h('b',{class:'small',text:'Últimas entregas'}),h('div',{class:'list'},S.payments.slice(0,15).map(function(x){
       return h('div',{class:'row small'},h('span',{class:'grow muted',text:fmtDate(x.created_at)+' · '+(nameOf[x.driver_id]||'')+(x.note?' · '+x.note:'')}),h('b',{text:eur(x.amount)}),
         h('button',{class:'btn danger sm',onclick:async function(){if(!confirm('Apagar esta entrega de '+eur(x.amount)+'?'))return;
-          var r=await sb.from('payments').delete().eq('id',x.id);if(r.error)toast(errMsg(r.error));await loadLedger();render();}},'Apagar'));}))):null));
+          var r=await sb.from('payments').delete().eq('id',x.id);if(r.error)toast(errMsg(r.error));await loadLedger();render();}},'Apagar'));}))):null),'ledger'));
 
   var all=S.rides.slice(0,50),done=S.rides.filter(function(r){return r.status==='completed';});
   var total=done.reduce(function(a,r){return a+Number(r.price);},0),comm=done.reduce(function(a,r){return a+Number(r.price)-Number(r.driver_earnings);},0);
-  app.append(h('div',{class:'card'},h('h2',{text:'Atividade'}),
+  app.append(fold(h('div',{class:'card'},h('h2',{text:'Atividade'}),
     h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Viagens concluídas'}),h('b',{text:String(done.length)})),
       h('div',null,h('div',{class:'small muted',text:'Faturado'}),h('b',{text:eur(total)})),h('div',null,h('div',{class:'small muted',text:'Comissão Ubeer'}),h('b',{text:eur(comm)}))),
     h('div',{class:'list'},all.map(function(r){return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
@@ -981,7 +991,7 @@ function adminView(app){
         var d=await sb.from('rides').delete().eq('id',r.id).select('id');
         if(d.error){toast(errMsg(d.error));return;}
         if(!d.data||!d.data.length){toast('Não foi possível apagar.');return;}
-        toast('Viagem apagada.');S.sig='';await loadRides();}},'Apagar viagem')));}))));
+        toast('Viagem apagada.');S.sig='';await loadRides();}},'Apagar viagem')));}))),'activity'));
 }
 
 boot();
