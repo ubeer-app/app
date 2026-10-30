@@ -234,7 +234,16 @@ function subscribe(){
     .on('postgres_changes',{event:'*',schema:'public',table:'driver_messages'},function(){loadChat();})
     .on('postgres_changes',{event:'INSERT',schema:'public',table:'ride_messages'},function(){loadRideChat();}).subscribe();
 }
+async function refreshOnlineList(){
+  if(!isDriverUser())return;
+  var r=await sb.rpc('drivers_online_list');if(r.error)return;
+  var sig=JSON.stringify((r.data||[]).map(function(x){return x.id;}));
+  var changed=sig!==S.onlineSig;S.onlineSig=sig;S.onlineList=r.data||[];
+  var a=document.activeElement;
+  if(changed&&S.profile&&S.profile.role!=='admin'&&!(a&&/INPUT|SELECT/.test(a.tagName)&&$('#app').contains(a)))render();
+}
 async function refreshOnline(){
+  refreshOnlineList();
   if(!S.profile||S.profile.role!=='admin')return;
   var before=JSON.stringify(S.users.map(function(u){return [u.id,u.is_online];}));
   await loadUsers();
@@ -287,6 +296,7 @@ async function afterLogin(){
   try{S.chatSeen=+localStorage.getItem(chatSeenKey())||0;}catch(e){S.chatSeen=0;}
   await loadChat();
   await loadLedger();
+  await refreshOnlineList();
   render();
   ensurePush();
 }
@@ -735,6 +745,8 @@ function driveView(app){
       h('button',{class:'btn '+(p.is_online?'danger':''),onclick:toggleOnline},p.is_online?'Ficar offline':'Ficar online')),
     h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Estado'}),h('b',{text:p.is_online?'Online':'Offline'})),
       h('div',null,h('div',{class:'small muted',text:'Ganhos hoje'}),h('b',{text:eur(earned)})))));
+  app.append(fold(h('div',{class:'card'},h('h2',{text:'Condutores online ('+(S.onlineList||[]).length+')'}),
+    (S.onlineList||[]).length?h('div',{class:'list'},S.onlineList.map(function(u){return h('div',{class:'row small'},h('span',{class:'grow',text:u.name+(u.id===p.id?' (tu)':'')}),h('span',{class:'pill ok',text:'Online'}));})):h('p',{class:'muted',text:'Neste momento não há condutores online.'})),'drvonline'));
   app.append(pushCard());
   var myL=S.ledger.filter(function(x){return x.driver_id===p.id;})[0]||{earned:0,owed:0,donated:0,paid:0,balance:0,rides:0};
   var myD=(S.donations||[]).filter(function(x){return x.driver_id===p.id;}).slice(0,8);
@@ -808,7 +820,7 @@ function driveView(app){
 async function toggleOnline(){
   var r=await sb.from('profiles').update({is_online:!S.profile.is_online}).eq('id',S.user.id).select().single();
   if(r.error)toast(errMsg(r.error));else{S.profile=r.data;}
-  await loadPublic();render();
+  await loadPublic();await refreshOnlineList();render();
 }
 
 /* --- chat da viagem (cliente <-> condutor) --- */
