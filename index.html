@@ -1074,7 +1074,7 @@ function adminView(app){
       h('div',null,h('div',{class:'small muted',text:'Faturado'}),h('b',{text:eur(total)})),h('div',null,h('div',{class:'small muted',text:'Comissão Ubeer'}),h('b',{text:eur(comm)}))),
     h('div',{class:'list'},all.map(function(r){return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
       h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+r.passenger_name+(r.driver_name?' · '+r.driver_name:'')}),windowLine(r),reasonLine(r),split(r),debtLine(r),debtActions(r),
-      h('div',{class:'row'},h('button',{class:'btn danger sm',onclick:async function(){
+      h('div',{class:'row'},['accepted','ongoing'].indexOf(r.status)>-1&&r.driver_id&&!r.scheduled_from?h('button',{class:'btn sm',onclick:function(){if(confirm('Marcar esta viagem como concluída?'))rpc('admin_complete_ride',{p_id:r.id},'Viagem concluída.');}},'Concluir viagem'):null,h('button',{class:'btn danger sm',onclick:async function(){
         var msg='Apagar esta viagem ('+r.from_name+' → '+r.to_name+', '+eur(r.price)+')?'+(r.status==='completed'?' Vai também sair das contas correntes.':'')+' Não dá para desfazer.';
         if(!confirm(msg))return;
         var d=await sb.from('rides').delete().eq('id',r.id).select('id');
