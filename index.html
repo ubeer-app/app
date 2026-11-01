@@ -208,7 +208,7 @@ async function loadRides(){
   var r=await sb.from('rides').select('*').order('created_at',{ascending:false}).limit(100);
   if(r.error)return;
   if(isDriverUser()){var bi=await sb.from('booking_interests').select('ride_id');if(!bi.error)S.myInt=(bi.data||[]).map(function(x){return x.ride_id;});}
-  var sig=JSON.stringify((r.data||[]).map(function(x){return [x.id,x.status,x.driver_id,x.interested];}))+JSON.stringify(S.myInt);
+  var sig=JSON.stringify((r.data||[]).map(function(x){return [x.id,x.status,x.driver_id,x.interested,x.debt_amount,x.debt_settled_at];}))+JSON.stringify(S.myInt);
   var changed=sig!==S.sig;S.sig=sig;S.rides=r.data||[];
   if(changed){await loadLedger();}
   loadRideChat();
@@ -587,6 +587,39 @@ function offerLine(r){
   return h('div',{class:'small',style:'font-weight:700;color:'+(d<0?'var(--warn)':'var(--ok)'),
     text:'Oferta do cliente: '+eur(r.price)+' (sugerido '+eur(r.suggested_price)+', '+(pct>0?'+':'')+pct+'%)'});
 }
+function debtOpen(r){return r.status==='completed'&&Number(r.debt_amount)>0&&!r.debt_settled_at;}
+function debtLine(r){
+  if(r.status!=='completed'||!(Number(r.debt_amount)>0))return null;
+  return r.debt_settled_at?h('div',{class:'small',style:'color:var(--ok)',text:'Dívida de '+eur(r.debt_amount)+' paga.'}):h('div',{style:'color:var(--bad);font-weight:600',text:'Em dívida: '+eur(r.debt_amount)});
+}
+function askDebt(r){
+  var def=String(debtOpen(r)?r.debt_amount:r.price).replace('.',',');
+  var v=prompt('Quanto ficou por pagar? (máximo '+eur(r.price)+')',def);if(v===null)return;
+  var n=parseFloat(String(v).replace(',','.'));if(!(n>=0)){toast('Valor inválido.');return;}
+  rpc('set_ride_debt',{p_id:r.id,p_amount:n},n>0?'Dívida registada.':'Dívida removida.');
+}
+function debtActions(r){
+  if(r.status!=='completed')return null;
+  if(debtOpen(r))return h('div',{class:'row'},
+    h('button',{class:'btn sm',onclick:function(){if(confirm('Marcar a dívida de '+eur(r.debt_amount)+' como paga?'))rpc('settle_ride_debt',{p_id:r.id},'Dívida marcada como paga.');}},'Marcar como paga'),
+    h('button',{class:'btn ghost sm',onclick:function(){askDebt(r);}},'Alterar valor'));
+  return Number(r.debt_amount)>0?null:h('button',{class:'btn ghost sm',onclick:function(){askDebt(r);}},'Ficou em dívida');
+}
+function debtCard(list,who,key){
+  var open=list.filter(debtOpen);if(!open.length)return null;
+  var total=open.reduce(function(a,r){return a+Number(r.debt_amount);},0),g={};
+  open.forEach(function(r){var k=who==='pax'?r.driver_id:r.passenger_id;(g[k]=g[k]||[]).push(r);});
+  var body=Object.keys(g).map(function(k){
+    var rs=g[k],t=rs.reduce(function(a,r){return a+Number(r.debt_amount);},0),f=rs[0];
+    var nm=who==='pax'?(f.driver_name||'Condutor'):f.passenger_name,ph=who==='pax'?f.driver_phone:f.passenger_phone;
+    return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:nm+(who==='admin'&&f.driver_name?' (condutor: '+f.driver_name+')':'')}),h('b',{style:'color:var(--bad)',text:eur(t)})),
+      ph?h('div',{class:'small'},h('a',{href:'tel:'+ph,text:ph})):null,
+      rs.map(function(r){return h('div',{class:'small muted',style:'display:flex;flex-direction:column;gap:6px'},h('span',{text:fmtDate(r.updated_at)+' · '+r.from_name+' → '+r.to_name+' · '+eur(r.debt_amount)}),who==='pax'?null:debtActions(r));}));
+  });
+  var intro=who==='pax'?h('p',{class:'small muted',text:'Ficaste de pagar estas viagens. Combina com o condutor para regularizar.'}):null;
+  var card=h('div',{class:'card'},h('h2',{text:(who==='pax'?'A tua conta em dívida':'Dívidas por receber')+' — '+eur(total)}),intro,h('div',{class:'list'},body));
+  return who==='pax'?card:fold(card,key);
+}
 function reasonLine(r){
   return r.status==='cancelled'&&r.cancel_reason?h('div',{class:'small',style:'color:var(--bad)',text:'Motivo do cancelamento: '+r.cancel_reason}):null;
 }
@@ -673,6 +706,7 @@ function rideView(app){
     },0);
   }
   var rc=bookingsCard();if(rc)app.append(rc);
+  var dc=debtCard(S.rides.filter(function(r){return r.passenger_id===S.user.id;}),'pax');if(dc)app.append(dc);
   app.append(historyCard());
 }
 function within24(r){return new Date(r.scheduled_from).getTime()-Date.now()<=24*3600*1000;}
@@ -705,7 +739,7 @@ function historyCard(){
   if(!mine.length)c.append(h('div',{class:'empty',text:'Ainda não fizeste viagens.'}));
   else c.append(h('div',{class:'list'},mine.map(function(r){
     return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
-      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+eur(r.price)}),windowLine(r),reasonLine(r));})));
+      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+eur(r.price)}),windowLine(r),reasonLine(r),debtLine(r));})));
   return c;
 }
 async function requestRide(){
@@ -769,6 +803,7 @@ function driveView(app){
       myD.length?h('div',{class:'list'},myD.map(function(x){return h('div',{class:'row small'},h('span',{class:'grow muted',text:fmtDate(x.created_at)+' · cedido'}),h('b',{text:eur(x.amount)}),
         h('button',{class:'btn danger sm',onclick:async function(){if(!confirm('Anular esta cedência de '+eur(x.amount)+'?'))return;
           var r=await sb.from('donations').delete().eq('id',x.id);if(r.error)toast(errMsg(r.error));await loadLedger();render();}},'Anular'));})):null)));
+  var ddc=debtCard(mine,'driver','drvdebt');if(ddc)app.append(ddc);
   if(act){
     app.append(h('div',{class:'card'},h('div',{class:'row'},h('h2',{class:'grow',text:'Viagem em curso'}),pill(act.status)),
       h('div',null,h('b',{text:act.from_name}),h('span',{class:'muted',text:'  →  '}),h('b',{text:act.to_name})),
@@ -815,7 +850,7 @@ function driveView(app){
   var done=mine.filter(function(r){return ['completed','cancelled'].indexOf(r.status)>-1;}).slice(0,10);
   if(done.length)app.append(h('div',{class:'card'},h('h2',{text:'Últimas viagens'}),h('div',{class:'list'},done.map(function(r){
     return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
-      h('div',{class:'small muted',text:fmtDate(r.updated_at)}),windowLine(r),reasonLine(r),r.status==='completed'?split(r):null);}))));
+      h('div',{class:'small muted',text:fmtDate(r.updated_at)}),windowLine(r),reasonLine(r),r.status==='completed'?split(r):null,debtLine(r),debtActions(r));}))));
 }
 async function toggleOnline(){
   var r=await sb.from('profiles').update({is_online:!S.profile.is_online}).eq('id',S.user.id).select().single();
@@ -1031,13 +1066,14 @@ function adminView(app){
         h('button',{class:'btn danger sm',onclick:async function(){if(!confirm('Apagar esta entrega de '+eur(x.amount)+'?'))return;
           var r=await sb.from('payments').delete().eq('id',x.id);if(r.error)toast(errMsg(r.error));await loadLedger();render();}},'Apagar'));}))):null),'ledger'));
 
+  var adc=debtCard(S.rides,'admin','admdebt');if(adc)app.append(adc);
   var all=S.rides.slice(0,50),done=S.rides.filter(function(r){return r.status==='completed';});
   var total=done.reduce(function(a,r){return a+Number(r.price);},0),comm=done.reduce(function(a,r){return a+Number(r.price)-Number(r.driver_earnings);},0);
   app.append(fold(h('div',{class:'card'},h('h2',{text:'Atividade'}),
     h('div',{class:'grid2'},h('div',null,h('div',{class:'small muted',text:'Viagens concluídas'}),h('b',{text:String(done.length)})),
       h('div',null,h('div',{class:'small muted',text:'Faturado'}),h('b',{text:eur(total)})),h('div',null,h('div',{class:'small muted',text:'Comissão Ubeer'}),h('b',{text:eur(comm)}))),
     h('div',{class:'list'},all.map(function(r){return h('div',{class:'item'},h('div',{class:'row'},h('b',{class:'grow',text:r.from_name+' → '+r.to_name}),pill(r.status)),
-      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+r.passenger_name+(r.driver_name?' · '+r.driver_name:'')}),windowLine(r),reasonLine(r),split(r),
+      h('div',{class:'small muted',text:fmtDate(r.created_at)+' · '+r.passenger_name+(r.driver_name?' · '+r.driver_name:'')}),windowLine(r),reasonLine(r),split(r),debtLine(r),debtActions(r),
       h('div',{class:'row'},h('button',{class:'btn danger sm',onclick:async function(){
         var msg='Apagar esta viagem ('+r.from_name+' → '+r.to_name+', '+eur(r.price)+')?'+(r.status==='completed'?' Vai também sair das contas correntes.':'')+' Não dá para desfazer.';
         if(!confirm(msg))return;
